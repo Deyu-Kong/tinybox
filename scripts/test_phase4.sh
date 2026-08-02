@@ -16,7 +16,7 @@ if [ ! -x "$TINYBOX" ]; then
 fi
 
 echo -n "Test 1: memory limit OOM kill... "
-OUTPUT=$($TINYBOX run --mem-limit 64M -- python3 -c "a = bytearray(200*1024*1024)" 2>&1) && CODE=0 || CODE=$?
+OUTPUT=$($TINYBOX run --memory 64m -- python3 -c "a = bytearray(200*1024*1024)" 2>&1) && CODE=0 || CODE=$?
 if [ "$CODE" -eq 137 ] || [ "$CODE" -eq 1 ]; then
     echo "PASS (exit code: $CODE)"
 else
@@ -26,7 +26,7 @@ else
 fi
 
 echo -n "Test 2: memory limit normal operation... "
-OUTPUT=$($TINYBOX run --mem-limit 256M -- echo hello)
+OUTPUT=$($TINYBOX run --memory 256m -- echo hello)
 if [ "$OUTPUT" = "hello" ]; then
     echo "PASS"
 else
@@ -35,7 +35,7 @@ else
 fi
 
 echo -n "Test 3: invalid memory limit... "
-if $TINYBOX run --mem-limit invalid -- echo test 2>&1 | grep -q "invalid"; then
+if $TINYBOX run --memory invalid -- echo test 2>&1 | grep -q "invalid"; then
     echo "PASS"
 else
     echo "FAIL"
@@ -43,7 +43,7 @@ else
 fi
 
 echo -n "Test 4: cpu limit normal operation... "
-OUTPUT=$($TINYBOX run --cpu-limit 50 -- echo hello)
+OUTPUT=$($TINYBOX run --cpus 0.5 -- echo hello)
 if [ "$OUTPUT" = "hello" ]; then
     echo "PASS"
 else
@@ -51,12 +51,30 @@ else
     exit 1
 fi
 
-echo -n "Test 5: invalid cpu limit... "
-if $TINYBOX run --cpu-limit 0 -- echo test 2>&1; then
-    echo "FAIL (should have rejected cpu-limit 0)"
+echo -n "Test 5: invalid cpu limit (zero)... "
+if $TINYBOX run --cpus 0 -- echo test 2>&1; then
+    echo "FAIL (should have rejected --cpus 0)"
     exit 1
 else
     echo "PASS"
+fi
+
+echo -n "Test 6: pids limit... "
+OUTPUT=$($TINYBOX run --pids-limit 10 -- echo hello)
+if [ "$OUTPUT" = "hello" ]; then
+    echo "PASS"
+else
+    echo "FAIL (got: $OUTPUT)"
+    exit 1
+fi
+
+echo -n "Test 7: short flag -m... "
+OUTPUT=$($TINYBOX run -m 128m -- echo hello)
+if [ "$OUTPUT" = "hello" ]; then
+    echo "PASS"
+else
+    echo "FAIL (got: $OUTPUT)"
+    exit 1
 fi
 
 echo "=== All Phase 4 tests passed ==="

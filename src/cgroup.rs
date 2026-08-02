@@ -4,8 +4,9 @@ use std::path::{Path, PathBuf};
 
 pub struct CgroupConfig {
     pub name: String,
-    pub mem_limit: Option<u64>,
-    pub cpu_limit: Option<u32>,
+    pub memory: Option<u64>,
+    pub cpus: Option<f64>,
+    pub pids_limit: Option<u64>,
 }
 
 pub struct Cgroup {
@@ -23,24 +24,30 @@ impl Cgroup {
 
         fs::create_dir_all(&path).context("failed to create cgroup directory")?;
 
-        if let Some(mem_limit) = config.mem_limit {
+        if let Some(memory) = config.memory {
             let mem_max_path = path.join("memory.max");
-            fs::write(&mem_max_path, mem_limit.to_string())
+            fs::write(&mem_max_path, memory.to_string())
                 .with_context(|| format!("failed to write memory.max to {:?}", mem_max_path))?;
 
             let swap_max_path = path.join("memory.swap.max");
             fs::write(&swap_max_path, "0").ok();
         }
 
-        if let Some(cpu_pct) = config.cpu_limit {
-            if cpu_pct == 0 || cpu_pct > 100 {
-                anyhow::bail!("cpu_limit must be between 1 and 100, got {}", cpu_pct);
+        if let Some(cpus) = config.cpus {
+            if cpus <= 0.0 {
+                anyhow::bail!("--cpus must be positive, got {}", cpus);
             }
-            let period: u32 = 100_000;
-            let quota = period * cpu_pct / 100;
+            let period: u64 = 100_000;
+            let quota = (cpus * period as f64) as u64;
             let cpu_max_path = path.join("cpu.max");
             fs::write(&cpu_max_path, format!("{} {}", quota, period))
                 .with_context(|| format!("failed to write cpu.max to {:?}", cpu_max_path))?;
+        }
+
+        if let Some(pids) = config.pids_limit {
+            let pids_max_path = path.join("pids.max");
+            fs::write(&pids_max_path, pids.to_string())
+                .with_context(|| format!("failed to write pids.max to {:?}", pids_max_path))?;
         }
 
         Ok(Self { path })
@@ -64,31 +71,27 @@ impl Drop for Cgroup {
     }
 }
 
-pub fn parse_mem_limit(s: &str) -> Result<u64> {
+pub fn parse_memory(s: &str) -> Result<u64> {
     let s = s.trim();
     if s.is_empty() {
-        anyhow::bail!("empty memory limit");
+        anyhow::bail!("empty memory value");
     }
 
-    let (num_str, multiplier) = if let Some(n) = s.strip_suffix('G') {
-        (n, 1024 * 1024 * 1024)
-    } else if let Some(n) = s.strip_suffix('M') {
-        (n, 1024 * 1024)
-    } else if let Some(n) = s.strip_suffix('K') {
-        (n, 1024)
-    } else if let Some(n) = s.strip_suffix("GB") {
-        (n, 1024 * 1024 * 1024)
-    } else if let Some(n) = s.strip_suffix("MB") {
-        (n, 1024 * 1024)
-    } else if let Some(n) = s.strip_suffix("KB") {
-        (n, 1024)
+    let (num_str, multiplier) = if let Some(n) = s.strip_suffix('g') {
+        (n, 1024u64 * 1024 * 1024)
+    } else if let Some(n) = s.strip_suffix('m') {
+        (n, 1024u64 * 1024)
+    } else if let Some(n) = s.strip_suffix('k') {
+        (n, 1024u64)
+    } else if let Some(n) = s.strip_suffix('b') {
+        (n, 1u64)
     } else {
-        (s, 1)
+        (s, 1u64)
     };
 
     let num: u64 = num_str
         .parse()
-        .with_context(|| format!("invalid memory limit: {}", s))?;
+        .with_context(|| format!("invalid memory value: {}", s))?;
 
     Ok(num * multiplier)
 }
@@ -98,32 +101,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_mem_limit_bytes() {
-        assert_eq!(parse_mem_limit("1024").unwrap(), 1024);
+    fn test_parse_memory_bytes() {
+        assert_eq!(parse_memory("1024").unwrap(), 1024);
     }
 
     #[test]
-    fn test_parse_mem_limit_k() {
-        assert_eq!(parse_mem_limit("1K").unwrap(), 1024);
-        assert_eq!(parse_mem_limit("1KB").unwrap(), 1024);
+    fn test_parse_memory_k() {
+        assert_eq!(parse_memory("1k").unwrap(), 1024);
     }
 
     #[test]
-    fn test_parse_mem_limit_m() {
-        assert_eq!(parse_mem_limit("64M").unwrap(), 64 * 1024 * 1024);
-        assert_eq!(parse_mem_limit("64MB").unwrap(), 64 * 1024 * 1024);
+    fn test_parse_memory_m() {
+        assert_eq!(parse_memory("64m").unwrap(), 64 * 1024 * 1024);
+        assert_eq!(parse_memory("256m").unwrap(), 256 * 1024 * 1024);
     }
 
     #[test]
-    fn test_parse_mem_limit_g() {
-        assert_eq!(parse_mem_limit("1G").unwrap(), 1024 * 1024 * 1024);
-        assert_eq!(parse_mem_limit("1GB").unwrap(), 1024 * 1024 * 1024);
+    fn test_parse_memory_g() {
+        assert_eq!(parse_memory("1g").unwrap(), 1024 * 1024 * 1024);
     }
 
     #[test]
-    fn test_parse_mem_limit_invalid() {
-        assert!(parse_mem_limit("").is_err());
-        assert!(parse_mem_limit("abc").is_err());
-        assert!(parse_mem_limit("64X").is_err());
+    fn test_parse_memory_b() {
+        assert_eq!(parse_memory("512b").unwrap(), 512);
+    }
+
+    #[test]
+    fn test_parse_memory_invalid() {
+        assert!(parse_memory("").is_err());
+        assert!(parse_memory("abc").is_err());
+        assert!(parse_memory("64x").is_err());
     }
 }

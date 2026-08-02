@@ -3,7 +3,7 @@ mod rootfs;
 mod sandbox;
 
 use anyhow::Result;
-use cgroup::parse_mem_limit;
+use cgroup::parse_memory;
 use clap::{Parser, Subcommand};
 use sandbox::{run_sandbox, SandboxConfig};
 
@@ -23,11 +23,14 @@ enum Commands {
         #[arg(long)]
         hostname: Option<String>,
 
-        #[arg(long)]
-        mem_limit: Option<String>,
+        #[arg(short = 'm', long)]
+        memory: Option<String>,
 
-        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=100))]
-        cpu_limit: Option<u32>,
+        #[arg(long)]
+        cpus: Option<f64>,
+
+        #[arg(long)]
+        pids_limit: Option<u64>,
 
         #[arg(long)]
         dangerous: bool,
@@ -51,22 +54,24 @@ fn main() -> Result<()> {
             command,
             root,
             hostname,
-            mem_limit,
-            cpu_limit,
+            memory,
+            cpus,
+            pids_limit,
             dangerous: _,
             proxy: _,
             oci: _,
         } => {
-            let mem_limit_bytes = match mem_limit {
-                Some(s) => Some(parse_mem_limit(&s)?),
+            let memory_bytes = match memory {
+                Some(s) => Some(parse_memory(&s)?),
                 None => None,
             };
             let config = SandboxConfig {
                 command,
                 hostname,
                 rootfs: root.map(std::path::PathBuf::from),
-                mem_limit: mem_limit_bytes,
-                cpu_limit,
+                memory: memory_bytes,
+                cpus,
+                pids_limit,
             };
             let code = run_sandbox(&config)?;
             std::process::exit(code);

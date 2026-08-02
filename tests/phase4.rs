@@ -9,7 +9,7 @@ fn is_root() -> bool {
 }
 
 #[test]
-fn test_mem_limit_oom() {
+fn test_memory_oom() {
     if !is_root() {
         eprintln!("skipping: requires root");
         return;
@@ -18,8 +18,8 @@ fn test_mem_limit_oom() {
     let output = tinybox_bin()
         .args([
             "run",
-            "--mem-limit",
-            "64M",
+            "--memory",
+            "64m",
             "--",
             "python3",
             "-c",
@@ -42,14 +42,14 @@ fn test_mem_limit_oom() {
 }
 
 #[test]
-fn test_mem_limit_normal() {
+fn test_memory_short_flag() {
     if !is_root() {
         eprintln!("skipping: requires root");
         return;
     }
 
     let output = tinybox_bin()
-        .args(["run", "--mem-limit", "256M", "--", "echo", "hello"])
+        .args(["run", "-m", "64m", "--", "echo", "hello"])
         .output()
         .expect("failed to execute tinybox");
 
@@ -59,24 +59,14 @@ fn test_mem_limit_normal() {
 }
 
 #[test]
-fn test_mem_limit_invalid() {
-    let output = tinybox_bin()
-        .args(["run", "--mem-limit", "invalid", "--", "echo", "test"])
-        .output()
-        .expect("failed to execute tinybox");
-
-    assert!(!output.status.success());
-}
-
-#[test]
-fn test_cpu_limit_normal() {
+fn test_memory_normal() {
     if !is_root() {
         eprintln!("skipping: requires root");
         return;
     }
 
     let output = tinybox_bin()
-        .args(["run", "--cpu-limit", "50", "--", "echo", "hello"])
+        .args(["run", "--memory", "256m", "--", "echo", "hello"])
         .output()
         .expect("failed to execute tinybox");
 
@@ -86,18 +76,60 @@ fn test_cpu_limit_normal() {
 }
 
 #[test]
-fn test_cpu_limit_invalid() {
+fn test_memory_invalid() {
     let output = tinybox_bin()
-        .args(["run", "--cpu-limit", "0", "--", "echo", "test"])
+        .args(["run", "--memory", "invalid", "--", "echo", "test"])
+        .output()
+        .expect("failed to execute tinybox");
+
+    assert!(!output.status.success());
+}
+
+#[test]
+fn test_cpus_normal() {
+    if !is_root() {
+        eprintln!("skipping: requires root");
+        return;
+    }
+
+    let output = tinybox_bin()
+        .args(["run", "--cpus", "0.5", "--", "echo", "hello"])
+        .output()
+        .expect("failed to execute tinybox");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("hello"));
+}
+
+#[test]
+fn test_cpus_invalid() {
+    let output = tinybox_bin()
+        .args(["run", "--cpus", "0", "--", "echo", "test"])
         .output()
         .expect("failed to execute tinybox");
 
     assert!(!output.status.success());
 
     let output = tinybox_bin()
-        .args(["run", "--cpu-limit", "101", "--", "echo", "test"])
+        .args(["run", "--cpus", "-1", "--", "echo", "test"])
         .output()
         .expect("failed to execute tinybox");
 
     assert!(!output.status.success());
+}
+
+#[test]
+fn test_pids_limit() {
+    if !is_root() {
+        eprintln!("skipping: requires root");
+        return;
+    }
+
+    let output = tinybox_bin()
+        .args(["run", "--pids-limit", "10", "--", "echo", "hello"])
+        .output()
+        .expect("failed to execute tinybox");
+
+    assert!(output.status.success());
 }

@@ -14,8 +14,9 @@ pub struct SandboxConfig {
     pub command: Vec<String>,
     pub hostname: Option<String>,
     pub rootfs: Option<PathBuf>,
-    pub mem_limit: Option<u64>,
-    pub cpu_limit: Option<u32>,
+    pub memory: Option<u64>,
+    pub cpus: Option<f64>,
+    pub pids_limit: Option<u64>,
 }
 
 pub fn run_sandbox(config: &SandboxConfig) -> Result<i32> {
@@ -37,12 +38,13 @@ pub fn run_sandbox(config: &SandboxConfig) -> Result<i32> {
     // SAFETY: fork() is safe here as we immediately handle namespace setup in the child.
     match unsafe { fork() }? {
         ForkResult::Parent { child } => {
-            let needs_cgroup = config.mem_limit.is_some() || config.cpu_limit.is_some();
+            let needs_cgroup = config.memory.is_some() || config.cpus.is_some() || config.pids_limit.is_some();
             let cgroup = if needs_cgroup {
                 let cgroup_config = CgroupConfig {
                     name: format!("tinybox-{}", child),
-                    mem_limit: config.mem_limit,
-                    cpu_limit: config.cpu_limit,
+                    memory: config.memory,
+                    cpus: config.cpus,
+                    pids_limit: config.pids_limit,
                 };
                 let cg = Cgroup::new(&cgroup_config)?;
                 cg.add_process(child.as_raw() as u32)?;
@@ -179,8 +181,9 @@ mod tests {
             command: vec![],
             hostname: None,
             rootfs: None,
-            mem_limit: None,
-            cpu_limit: None,
+            memory: None,
+            cpus: None,
+            pids_limit: None,
         };
         assert!(run_sandbox(&config).is_err());
     }
