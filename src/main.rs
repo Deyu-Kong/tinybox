@@ -30,6 +30,12 @@ enum Commands {
         cpus: Option<f64>,
 
         #[arg(long)]
+        cpu_quota: Option<i64>,
+
+        #[arg(long)]
+        cpu_period: Option<u64>,
+
+        #[arg(long)]
         pids_limit: Option<u64>,
 
         #[arg(long)]
@@ -56,6 +62,8 @@ fn main() -> Result<()> {
             hostname,
             memory,
             cpus,
+            cpu_quota,
+            cpu_period,
             pids_limit,
             dangerous: _,
             proxy: _,
@@ -71,6 +79,8 @@ fn main() -> Result<()> {
                 rootfs: root.map(std::path::PathBuf::from),
                 memory: memory_bytes,
                 cpus,
+                cpu_quota,
+                cpu_period,
                 pids_limit,
             };
             let code = run_sandbox(&config)?;

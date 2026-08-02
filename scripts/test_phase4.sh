@@ -42,7 +42,7 @@ else
     exit 1
 fi
 
-echo -n "Test 4: cpu limit normal operation... "
+echo -n "Test 4: cpu limit (--cpus) normal operation... "
 OUTPUT=$($TINYBOX run --cpus 0.5 -- echo hello)
 if [ "$OUTPUT" = "hello" ]; then
     echo "PASS"
@@ -59,7 +59,24 @@ else
     echo "PASS"
 fi
 
-echo -n "Test 6: pids limit... "
+echo -n "Test 6: cpu-quota + cpu-period... "
+OUTPUT=$($TINYBOX run --cpu-quota 50000 --cpu-period 100000 -- echo hello)
+if [ "$OUTPUT" = "hello" ]; then
+    echo "PASS"
+else
+    echo "FAIL (got: $OUTPUT)"
+    exit 1
+fi
+
+echo -n "Test 7: invalid cpu-quota (zero)... "
+if $TINYBOX run --cpu-quota 0 -- echo test 2>&1; then
+    echo "FAIL (should have rejected --cpu-quota 0)"
+    exit 1
+else
+    echo "PASS"
+fi
+
+echo -n "Test 8: pids limit... "
 OUTPUT=$($TINYBOX run --pids-limit 10 -- echo hello)
 if [ "$OUTPUT" = "hello" ]; then
     echo "PASS"
@@ -68,7 +85,7 @@ else
     exit 1
 fi
 
-echo -n "Test 7: short flag -m... "
+echo -n "Test 9: short flag -m... "
 OUTPUT=$($TINYBOX run -m 128m -- echo hello)
 if [ "$OUTPUT" = "hello" ]; then
     echo "PASS"

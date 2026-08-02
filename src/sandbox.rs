@@ -3,8 +3,9 @@ use nix::mount::{mount, MsFlags};
 use nix::sched::{unshare, CloneFlags};
 use nix::sys::signal::Signal;
 use nix::sys::wait::{waitpid, WaitStatus};
-use nix::unistd::{execvp, fork, sethostname, ForkResult};
+use nix::unistd::{close, execvp, fork, pipe, read, sethostname, ForkResult};
 use std::ffi::CString;
+use std::os::unix::io::{BorrowedFd, IntoRawFd};
 use std::path::PathBuf;
 
 use crate::cgroup::{Cgroup, CgroupConfig};
@@ -16,6 +17,8 @@ pub struct SandboxConfig {
     pub rootfs: Option<PathBuf>,
     pub memory: Option<u64>,
     pub cpus: Option<f64>,
+    pub cpu_quota: Option<i64>,
+    pub cpu_period: Option<u64>,
     pub pids_limit: Option<u64>,
 }
 
@@ -35,29 +38,54 @@ pub fn run_sandbox(config: &SandboxConfig) -> Result<i32> {
         .map(|s| CString::new(s.as_str()).unwrap())
         .collect();
 
+    let needs_cgroup = config.memory.is_some()
+        || config.cpus.is_some()
+        || config.cpu_quota.is_some()
+        || config.pids_limit.is_some();
+
+    let cgroup = if needs_cgroup {
+        let cgroup_config = CgroupConfig {
+            name: format!("tinybox-{}", std::process::id()),
+            memory: config.memory,
+            cpus: config.cpus,
+            cpu_quota: config.cpu_quota,
+            cpu_period: config.cpu_period,
+            pids_limit: config.pids_limit,
+        };
+        Some(Cgroup::new(&cgroup_config)?)
+    } else {
+        None
+    };
+
+    let (read_fd, write_fd) = pipe().context("failed to create pipe")?;
+    let read_fd = read_fd.into_raw_fd();
+    let write_fd = write_fd.into_raw_fd();
+
     // SAFETY: fork() is safe here as we immediately handle namespace setup in the child.
     match unsafe { fork() }? {
         ForkResult::Parent { child } => {
-            let needs_cgroup = config.memory.is_some() || config.cpus.is_some() || config.pids_limit.is_some();
-            let cgroup = if needs_cgroup {
-                let cgroup_config = CgroupConfig {
-                    name: format!("tinybox-{}", child),
-                    memory: config.memory,
-                    cpus: config.cpus,
-                    pids_limit: config.pids_limit,
-                };
-                let cg = Cgroup::new(&cgroup_config)?;
+            close(read_fd).ok();
+
+            if let Some(ref cg) = cgroup {
                 cg.add_process(child.as_raw() as u32)?;
-                Some(cg)
-            } else {
-                None
-            };
+            }
+
+            // SAFETY: write_fd is valid (just created by pipe, not yet closed).
+            let borrowed = unsafe { BorrowedFd::borrow_raw(write_fd) };
+            nix::unistd::write(borrowed, b"go").ok();
+            close(write_fd).ok();
 
             let status = waitpid(child, None)?;
             drop(cgroup);
             Ok(exit_code_from_status(status))
         }
         ForkResult::Child => {
+            close(write_fd).ok();
+
+            let mut buf = [0u8; 2];
+            let _ = read(read_fd, &mut buf);
+            close(read_fd).ok();
+
             if let Err(e) = child_main(config, &program, &args) {
                 eprintln!("tinybox: {}", e);
                 std::process::exit(1);
@@ -183,6 +211,8 @@ mod tests {
             rootfs: None,
             memory: None,
             cpus: None,
+            cpu_quota: None,
+            cpu_period: None,
             pids_limit: None,
         };
         assert!(run_sandbox(&config).is_err());

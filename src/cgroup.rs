@@ -6,6 +6,8 @@ pub struct CgroupConfig {
     pub name: String,
     pub memory: Option<u64>,
     pub cpus: Option<f64>,
+    pub cpu_quota: Option<i64>,
+    pub cpu_period: Option<u64>,
     pub pids_limit: Option<u64>,
 }
 
@@ -33,11 +35,19 @@ impl Cgroup {
             fs::write(&swap_max_path, "0").ok();
         }
 
-        if let Some(cpus) = config.cpus {
+        let period = config.cpu_period.unwrap_or(100_000);
+
+        if let Some(quota) = config.cpu_quota {
+            if quota <= 0 {
+                anyhow::bail!("--cpu-quota must be positive, got {}", quota);
+            }
+            let cpu_max_path = path.join("cpu.max");
+            fs::write(&cpu_max_path, format!("{} {}", quota, period))
+                .with_context(|| format!("failed to write cpu.max to {:?}", cpu_max_path))?;
+        } else if let Some(cpus) = config.cpus {
             if cpus <= 0.0 {
                 anyhow::bail!("--cpus must be positive, got {}", cpus);
             }
-            let period: u64 = 100_000;
             let quota = (cpus * period as f64) as u64;
             let cpu_max_path = path.join("cpu.max");
             fs::write(&cpu_max_path, format!("{} {}", quota, period))
