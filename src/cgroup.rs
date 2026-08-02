@@ -26,6 +26,9 @@ impl Cgroup {
             let mem_max_path = path.join("memory.max");
             fs::write(&mem_max_path, mem_limit.to_string())
                 .with_context(|| format!("failed to write memory.max to {:?}", mem_max_path))?;
+
+            let swap_max_path = path.join("memory.swap.max");
+            fs::write(&swap_max_path, "0").ok();
         }
 
         Ok(Self { path })

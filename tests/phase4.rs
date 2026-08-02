@@ -8,21 +8,10 @@ fn is_root() -> bool {
     unsafe { libc::geteuid() == 0 }
 }
 
-fn is_wsl() -> bool {
-    std::fs::read_to_string("/proc/version")
-        .map(|v| v.contains("WSL") || v.contains("Microsoft"))
-        .unwrap_or(false)
-}
-
 #[test]
 fn test_mem_limit_oom() {
     if !is_root() {
         eprintln!("skipping: requires root");
-        return;
-    }
-
-    if is_wsl() {
-        eprintln!("skipping: WSL2 cgroup memory limit not functional");
         return;
     }
 
@@ -32,9 +21,9 @@ fn test_mem_limit_oom() {
             "--mem-limit",
             "64M",
             "--",
-            "sh",
+            "python3",
             "-c",
-            "dd if=/dev/zero of=/dev/null bs=1M count=200",
+            "a = bytearray(200*1024*1024)",
         ])
         .output()
         .expect("failed to execute tinybox");
