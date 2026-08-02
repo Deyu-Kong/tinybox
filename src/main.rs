@@ -1,7 +1,9 @@
+mod cgroup;
 mod rootfs;
 mod sandbox;
 
 use anyhow::Result;
+use cgroup::parse_mem_limit;
 use clap::{Parser, Subcommand};
 use sandbox::{run_sandbox, SandboxConfig};
 
@@ -46,15 +48,20 @@ fn main() -> Result<()> {
             command,
             root,
             hostname,
-            mem_limit: _,
+            mem_limit,
             dangerous: _,
             proxy: _,
             oci: _,
         } => {
+            let mem_limit_bytes = match mem_limit {
+                Some(s) => Some(parse_mem_limit(&s)?),
+                None => None,
+            };
             let config = SandboxConfig {
                 command,
                 hostname,
                 rootfs: root.map(std::path::PathBuf::from),
+                mem_limit: mem_limit_bytes,
             };
             let code = run_sandbox(&config)?;
             std::process::exit(code);

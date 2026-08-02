@@ -7,12 +7,14 @@ use nix::unistd::{execvp, fork, sethostname, ForkResult};
 use std::ffi::CString;
 use std::path::PathBuf;
 
+use crate::cgroup::{Cgroup, CgroupConfig};
 use crate::rootfs::RootfsConfig;
 
 pub struct SandboxConfig {
     pub command: Vec<String>,
     pub hostname: Option<String>,
     pub rootfs: Option<PathBuf>,
+    pub mem_limit: Option<u64>,
 }
 
 pub fn run_sandbox(config: &SandboxConfig) -> Result<i32> {
@@ -34,7 +36,20 @@ pub fn run_sandbox(config: &SandboxConfig) -> Result<i32> {
     // SAFETY: fork() is safe here as we immediately handle namespace setup in the child.
     match unsafe { fork() }? {
         ForkResult::Parent { child } => {
+            let cgroup = if config.mem_limit.is_some() {
+                let cgroup_config = CgroupConfig {
+                    name: format!("tinybox-{}", child),
+                    mem_limit: config.mem_limit,
+                };
+                let cg = Cgroup::new(&cgroup_config)?;
+                cg.add_process(child.as_raw() as u32)?;
+                Some(cg)
+            } else {
+                None
+            };
+
             let status = waitpid(child, None)?;
+            drop(cgroup);
             Ok(exit_code_from_status(status))
         }
         ForkResult::Child => {
@@ -161,6 +176,7 @@ mod tests {
             command: vec![],
             hostname: None,
             rootfs: None,
+            mem_limit: None,
         };
         assert!(run_sandbox(&config).is_err());
     }
