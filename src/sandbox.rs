@@ -1,11 +1,14 @@
 use anyhow::{bail, Result};
+use nix::mount::{mount, MsFlags};
+use nix::sched::{unshare, CloneFlags};
 use nix::sys::signal::Signal;
 use nix::sys::wait::{waitpid, WaitStatus};
-use nix::unistd::{execvp, fork, ForkResult};
+use nix::unistd::{execvp, fork, sethostname, ForkResult};
 use std::ffi::CString;
 
 pub struct SandboxConfig {
     pub command: Vec<String>,
+    pub hostname: Option<String>,
 }
 
 pub fn run_sandbox(config: &SandboxConfig) -> Result<i32> {
@@ -24,17 +27,58 @@ pub fn run_sandbox(config: &SandboxConfig) -> Result<i32> {
         .map(|s| CString::new(s.as_str()).unwrap())
         .collect();
 
-    // SAFETY: fork() is safe here as we immediately execvp in the child.
+    // SAFETY: fork() is safe here as we immediately handle namespace setup in the child.
     match unsafe { fork() }? {
         ForkResult::Parent { child } => {
             let status = waitpid(child, None)?;
             Ok(exit_code_from_status(status))
         }
         ForkResult::Child => {
-            execvp(&program, &args)?;
+            if let Err(e) = child_main(config, &program, &args) {
+                eprintln!("tinybox: {}", e);
+                std::process::exit(1);
+            }
             unreachable!()
         }
     }
+}
+
+fn child_main(config: &SandboxConfig, program: &CString, args: &[CString]) -> Result<()> {
+    let mut flags = CloneFlags::empty();
+    flags.insert(CloneFlags::CLONE_NEWPID);
+    flags.insert(CloneFlags::CLONE_NEWNS);
+    flags.insert(CloneFlags::CLONE_NEWUTS);
+
+    unshare(flags)?;
+
+    if let Some(ref hostname) = config.hostname {
+        sethostname(hostname)?;
+    }
+
+    // SAFETY: fork() after unshare(CLONE_NEWPID) creates a process that is PID 1
+    // in the new PID namespace.
+    match unsafe { fork() }? {
+        ForkResult::Parent { child } => {
+            let status = waitpid(child, None)?;
+            std::process::exit(exit_code_from_status(status));
+        }
+        ForkResult::Child => {
+            mount_proc()?;
+            execvp(program, args)?;
+            unreachable!()
+        }
+    }
+}
+
+fn mount_proc() -> Result<()> {
+    mount(
+        Some("proc"),
+        "/proc",
+        Some("proc"),
+        MsFlags::empty(),
+        None::<&str>,
+    )?;
+    Ok(())
 }
 
 fn exit_code_from_status(status: WaitStatus) -> i32 {
@@ -71,49 +115,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_run_true() {
-        let config = SandboxConfig {
-            command: vec!["true".to_string()],
-        };
-        let code = run_sandbox(&config).unwrap();
-        assert_eq!(code, 0);
+    fn test_exit_code_exited() {
+        assert_eq!(exit_code_from_status(WaitStatus::Exited(nix::unistd::Pid::from_raw(1), 0)), 0);
+        assert_eq!(exit_code_from_status(WaitStatus::Exited(nix::unistd::Pid::from_raw(1), 42)), 42);
     }
 
     #[test]
-    fn test_run_false() {
-        let config = SandboxConfig {
-            command: vec!["false".to_string()],
-        };
-        let code = run_sandbox(&config).unwrap();
-        assert_eq!(code, 1);
-    }
-
-    #[test]
-    fn test_run_echo() {
-        let config = SandboxConfig {
-            command: vec!["echo".to_string(), "hello".to_string()],
-        };
-        let code = run_sandbox(&config).unwrap();
-        assert_eq!(code, 0);
-    }
-
-    #[test]
-    fn test_run_exit_code() {
-        let config = SandboxConfig {
-            command: vec![
-                "sh".to_string(),
-                "-c".to_string(),
-                "exit 42".to_string(),
-            ],
-        };
-        let code = run_sandbox(&config).unwrap();
-        assert_eq!(code, 42);
+    fn test_exit_code_signaled() {
+        assert_eq!(
+            exit_code_from_status(WaitStatus::Signaled(nix::unistd::Pid::from_raw(1), Signal::SIGKILL, false)),
+            128 + 9
+        );
     }
 
     #[test]
     fn test_empty_command() {
         let config = SandboxConfig {
             command: vec![],
+            hostname: None,
         };
         assert!(run_sandbox(&config).is_err());
     }

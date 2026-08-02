@@ -44,13 +44,13 @@ fn main() -> Result<()> {
         Commands::Run {
             command,
             root: _,
-            hostname: _,
+            hostname,
             mem_limit: _,
             dangerous: _,
             proxy: _,
             oci: _,
         } => {
-            let config = SandboxConfig { command };
+            let config = SandboxConfig { command, hostname };
             let code = run_sandbox(&config)?;
             std::process::exit(code);
         }
