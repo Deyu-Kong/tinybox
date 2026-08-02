@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 use crate::cgroup::{Cgroup, CgroupConfig};
 use crate::rootfs::RootfsConfig;
+use crate::seccomp::apply_seccomp_filter;
 
 pub struct SandboxConfig {
     pub command: Vec<String>,
@@ -20,6 +21,7 @@ pub struct SandboxConfig {
     pub cpu_quota: Option<i64>,
     pub cpu_period: Option<u64>,
     pub pids_limit: Option<u64>,
+    pub dangerous: bool,
 }
 
 pub fn run_sandbox(config: &SandboxConfig) -> Result<i32> {
@@ -139,6 +141,7 @@ fn child_main(config: &SandboxConfig, program: &CString, args: &[CString]) -> Re
             }
             drop(rootfs_config);
             mount_proc()?;
+            apply_seccomp_filter(config.dangerous)?;
             execvp(program, args)?;
             unreachable!()
         }
@@ -181,6 +184,7 @@ fn signal_to_int(signal: Signal) -> i32 {
         Signal::SIGPIPE => 13,
         Signal::SIGALRM => 14,
         Signal::SIGTERM => 15,
+        Signal::SIGSYS => 31,
         _ => 0,
     }
 }
@@ -214,6 +218,7 @@ mod tests {
             cpu_quota: None,
             cpu_period: None,
             pids_limit: None,
+            dangerous: false,
         };
         assert!(run_sandbox(&config).is_err());
     }

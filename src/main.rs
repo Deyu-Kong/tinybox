@@ -1,6 +1,7 @@
 mod cgroup;
 mod rootfs;
 mod sandbox;
+mod seccomp;
 
 use anyhow::Result;
 use cgroup::parse_memory;
@@ -65,7 +66,7 @@ fn main() -> Result<()> {
             cpu_quota,
             cpu_period,
             pids_limit,
-            dangerous: _,
+            dangerous,
             proxy: _,
             oci: _,
         } => {
@@ -82,6 +83,7 @@ fn main() -> Result<()> {
                 cpu_quota,
                 cpu_period,
                 pids_limit,
+                dangerous,
             };
             let code = run_sandbox(&config)?;
             std::process::exit(code);
