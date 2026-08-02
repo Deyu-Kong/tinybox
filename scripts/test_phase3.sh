@@ -1,0 +1,70 @@
+#!/bin/bash
+set -e
+
+echo "=== Phase 3 Acceptance Tests ==="
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "ERROR: This script must be run as root"
+    exit 1
+fi
+
+TINYBOX="./target/debug/tinybox"
+
+if [ ! -x "$TINYBOX" ]; then
+    echo "Building tinybox..."
+    cargo build
+fi
+
+ROOTFS=$(mktemp -d)
+trap "rm -rf $ROOTFS" EXIT
+
+echo "Creating test rootfs at $ROOTFS..."
+mkdir -p "$ROOTFS/bin" "$ROOTFS/proc" "$ROOTFS/tmp"
+
+for bin in sh echo cat ls id hostname ps; do
+    if [ -x "/bin/$bin" ]; then
+        cp "/bin/$bin" "$ROOTFS/bin/"
+    fi
+done
+
+echo -n "Test 1: basic rootfs execution... "
+OUTPUT=$($TINYBOX run --root "$ROOTFS" -- echo hello)
+if [ "$OUTPUT" = "hello" ]; then
+    echo "PASS"
+else
+    echo "FAIL (got: $OUTPUT)"
+    exit 1
+fi
+
+echo -n "Test 2: file isolation (COW)... "
+OUTPUT=$($TINYBOX run --root "$ROOTFS" -- sh -c "echo 'isolated' > /tmp/test.txt && cat /tmp/test.txt")
+if [ "$OUTPUT" = "isolated" ]; then
+    echo "PASS"
+else
+    echo "FAIL (got: $OUTPUT)"
+    exit 1
+fi
+
+if [ -f "$ROOTFS/tmp/test.txt" ]; then
+    echo "FAIL: file leaked to host rootfs"
+    exit 1
+fi
+
+echo -n "Test 3: rootfs with hostname... "
+OUTPUT=$($TINYBOX run --root "$ROOTFS" --hostname sandbox3 -- hostname)
+if [ "$OUTPUT" = "sandbox3" ]; then
+    echo "PASS"
+else
+    echo "FAIL (got: $OUTPUT)"
+    exit 1
+fi
+
+echo -n "Test 4: nonexistent rootfs... "
+if $TINYBOX run --root /nonexistent/rootfs -- echo test 2>&1 | grep -q "does not exist\|not exist"; then
+    echo "PASS"
+else
+    echo "FAIL"
+    exit 1
+fi
+
+echo "=== All Phase 3 tests passed ==="

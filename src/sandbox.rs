@@ -5,10 +5,14 @@ use nix::sys::signal::Signal;
 use nix::sys::wait::{waitpid, WaitStatus};
 use nix::unistd::{execvp, fork, sethostname, ForkResult};
 use std::ffi::CString;
+use std::path::PathBuf;
+
+use crate::rootfs::RootfsConfig;
 
 pub struct SandboxConfig {
     pub command: Vec<String>,
     pub hostname: Option<String>,
+    pub rootfs: Option<PathBuf>,
 }
 
 pub fn run_sandbox(config: &SandboxConfig) -> Result<i32> {
@@ -55,6 +59,14 @@ fn child_main(config: &SandboxConfig, program: &CString, args: &[CString]) -> Re
         sethostname(hostname)?;
     }
 
+    let rootfs_config = if let Some(ref rootfs_path) = config.rootfs {
+        let rootfs = RootfsConfig::new(rootfs_path.clone())?;
+        rootfs.setup()?;
+        Some(rootfs)
+    } else {
+        None
+    };
+
     // SAFETY: fork() after unshare(CLONE_NEWPID) creates a process that is PID 1
     // in the new PID namespace.
     match unsafe { fork() }? {
@@ -63,6 +75,9 @@ fn child_main(config: &SandboxConfig, program: &CString, args: &[CString]) -> Re
             std::process::exit(exit_code_from_status(status));
         }
         ForkResult::Child => {
+            if let Some(ref rootfs) = rootfs_config {
+                rootfs.pivot()?;
+            }
             mount_proc()?;
             execvp(program, args)?;
             unreachable!()
@@ -133,6 +148,7 @@ mod tests {
         let config = SandboxConfig {
             command: vec![],
             hostname: None,
+            rootfs: None,
         };
         assert!(run_sandbox(&config).is_err());
     }

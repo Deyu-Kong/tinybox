@@ -1,3 +1,4 @@
+mod rootfs;
 mod sandbox;
 
 use anyhow::Result;
@@ -43,14 +44,18 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Run {
             command,
-            root: _,
+            root,
             hostname,
             mem_limit: _,
             dangerous: _,
             proxy: _,
             oci: _,
         } => {
-            let config = SandboxConfig { command, hostname };
+            let config = SandboxConfig {
+                command,
+                hostname,
+                rootfs: root.map(std::path::PathBuf::from),
+            };
             let code = run_sandbox(&config)?;
             std::process::exit(code);
         }
