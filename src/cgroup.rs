@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 pub struct CgroupConfig {
     pub name: String,
     pub mem_limit: Option<u64>,
+    pub cpu_limit: Option<u32>,
 }
 
 pub struct Cgroup {
@@ -29,6 +30,17 @@ impl Cgroup {
 
             let swap_max_path = path.join("memory.swap.max");
             fs::write(&swap_max_path, "0").ok();
+        }
+
+        if let Some(cpu_pct) = config.cpu_limit {
+            if cpu_pct == 0 || cpu_pct > 100 {
+                anyhow::bail!("cpu_limit must be between 1 and 100, got {}", cpu_pct);
+            }
+            let period: u32 = 100_000;
+            let quota = period * cpu_pct / 100;
+            let cpu_max_path = path.join("cpu.max");
+            fs::write(&cpu_max_path, format!("{} {}", quota, period))
+                .with_context(|| format!("failed to write cpu.max to {:?}", cpu_max_path))?;
         }
 
         Ok(Self { path })

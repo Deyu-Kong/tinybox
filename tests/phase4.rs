@@ -67,3 +67,37 @@ fn test_mem_limit_invalid() {
 
     assert!(!output.status.success());
 }
+
+#[test]
+fn test_cpu_limit_normal() {
+    if !is_root() {
+        eprintln!("skipping: requires root");
+        return;
+    }
+
+    let output = tinybox_bin()
+        .args(["run", "--cpu-limit", "50", "--", "echo", "hello"])
+        .output()
+        .expect("failed to execute tinybox");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("hello"));
+}
+
+#[test]
+fn test_cpu_limit_invalid() {
+    let output = tinybox_bin()
+        .args(["run", "--cpu-limit", "0", "--", "echo", "test"])
+        .output()
+        .expect("failed to execute tinybox");
+
+    assert!(!output.status.success());
+
+    let output = tinybox_bin()
+        .args(["run", "--cpu-limit", "101", "--", "echo", "test"])
+        .output()
+        .expect("failed to execute tinybox");
+
+    assert!(!output.status.success());
+}

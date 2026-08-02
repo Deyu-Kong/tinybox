@@ -42,4 +42,21 @@ else
     exit 1
 fi
 
+echo -n "Test 4: cpu limit normal operation... "
+OUTPUT=$($TINYBOX run --cpu-limit 50 -- echo hello)
+if [ "$OUTPUT" = "hello" ]; then
+    echo "PASS"
+else
+    echo "FAIL (got: $OUTPUT)"
+    exit 1
+fi
+
+echo -n "Test 5: invalid cpu limit... "
+if $TINYBOX run --cpu-limit 0 -- echo test 2>&1; then
+    echo "FAIL (should have rejected cpu-limit 0)"
+    exit 1
+else
+    echo "PASS"
+fi
+
 echo "=== All Phase 4 tests passed ==="

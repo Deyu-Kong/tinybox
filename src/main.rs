@@ -26,6 +26,9 @@ enum Commands {
         #[arg(long)]
         mem_limit: Option<String>,
 
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=100))]
+        cpu_limit: Option<u32>,
+
         #[arg(long)]
         dangerous: bool,
 
@@ -49,6 +52,7 @@ fn main() -> Result<()> {
             root,
             hostname,
             mem_limit,
+            cpu_limit,
             dangerous: _,
             proxy: _,
             oci: _,
@@ -62,6 +66,7 @@ fn main() -> Result<()> {
                 hostname,
                 rootfs: root.map(std::path::PathBuf::from),
                 mem_limit: mem_limit_bytes,
+                cpu_limit,
             };
             let code = run_sandbox(&config)?;
             std::process::exit(code);
