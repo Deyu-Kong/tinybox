@@ -79,3 +79,75 @@ fn test_seccomp_allows_echo() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("hello"));
 }
+
+#[test]
+fn test_capabilities_dropped() {
+    if !is_root() {
+        eprintln!("skipping: requires root");
+        return;
+    }
+
+    let output = tinybox_bin()
+        .args(["run", "--", "cat", "/proc/self/status"])
+        .output()
+        .expect("failed to execute tinybox");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    let cap_eff = stdout
+        .lines()
+        .find(|line| line.starts_with("CapEff:"))
+        .expect("CapEff not found in /proc/self/status");
+
+    let cap_value = u64::from_str_radix(cap_eff.split_whitespace().nth(1).unwrap(), 16)
+        .expect("failed to parse CapEff");
+
+    let cap_sys_admin = 1u64 << 21;
+    assert_eq!(
+        cap_value & cap_sys_admin,
+        0,
+        "CAP_SYS_ADMIN should be dropped, but CapEff is {:016x}",
+        cap_value
+    );
+
+    let cap_net_admin = 1u64 << 12;
+    assert_eq!(
+        cap_value & cap_net_admin,
+        0,
+        "CAP_NET_ADMIN should be dropped, but CapEff is {:016x}",
+        cap_value
+    );
+}
+
+#[test]
+fn test_dangerous_keeps_capabilities() {
+    if !is_root() {
+        eprintln!("skipping: requires root");
+        return;
+    }
+
+    let output = tinybox_bin()
+        .args(["run", "--dangerous", "--", "cat", "/proc/self/status"])
+        .output()
+        .expect("failed to execute tinybox");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    let cap_eff = stdout
+        .lines()
+        .find(|line| line.starts_with("CapEff:"))
+        .expect("CapEff not found in /proc/self/status");
+
+    let cap_value = u64::from_str_radix(cap_eff.split_whitespace().nth(1).unwrap(), 16)
+        .expect("failed to parse CapEff");
+
+    let cap_sys_admin = 1u64 << 21;
+    assert_ne!(
+        cap_value & cap_sys_admin,
+        0,
+        "CAP_SYS_ADMIN should be present with --dangerous, but CapEff is {:016x}",
+        cap_value
+    );
+}

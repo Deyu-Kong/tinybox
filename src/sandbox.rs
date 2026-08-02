@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use crate::cgroup::{Cgroup, CgroupConfig};
 use crate::rootfs::RootfsConfig;
-use crate::seccomp::apply_seccomp_filter;
+use crate::seccomp::{apply_seccomp_filter, drop_capabilities};
 
 pub struct SandboxConfig {
     pub command: Vec<String>,
@@ -141,6 +141,7 @@ fn child_main(config: &SandboxConfig, program: &CString, args: &[CString]) -> Re
             }
             drop(rootfs_config);
             mount_proc()?;
+            drop_capabilities(config.dangerous)?;
             apply_seccomp_filter(config.dangerous)?;
             execvp(program, args)?;
             unreachable!()

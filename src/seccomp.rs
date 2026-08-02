@@ -4,6 +4,86 @@ use seccompiler::{
 };
 use std::collections::BTreeMap;
 
+#[repr(C)]
+struct CapData {
+    effective: u32,
+    permitted: u32,
+    inheritable: u32,
+}
+
+#[repr(C)]
+struct CapHeader {
+    version: u32,
+    pid: i32,
+}
+
+const CAP_SYS_ADMIN: u32 = 21;
+const CAP_NET_ADMIN: u32 = 12;
+const CAP_SYS_MODULE: u32 = 16;
+const CAP_SYS_RAWIO: u32 = 17;
+const CAP_SYS_PTRACE: u32 = 19;
+const CAP_SYS_BOOT: u32 = 22;
+const CAP_SYS_TIME: u32 = 25;
+const CAP_MKNOD: u32 = 27;
+
+const DANGEROUS_CAPS: [u32; 8] = [
+    CAP_SYS_ADMIN,
+    CAP_NET_ADMIN,
+    CAP_SYS_MODULE,
+    CAP_SYS_RAWIO,
+    CAP_SYS_PTRACE,
+    CAP_SYS_BOOT,
+    CAP_SYS_TIME,
+    CAP_MKNOD,
+];
+
+pub fn drop_capabilities(dangerous: bool) -> Result<()> {
+    if dangerous {
+        return Ok(());
+    }
+
+    let mut mask: u64 = 0;
+    for cap in &DANGEROUS_CAPS {
+        mask |= 1u64 << cap;
+    }
+
+    let caps0 = (mask & 0xFFFFFFFF) as u32;
+    let caps1 = (mask >> 32) as u32;
+
+    let mut hdr = CapHeader {
+        version: 0x20080522,
+        pid: 0,
+    };
+
+    let mut data = [
+        CapData { effective: caps0, permitted: caps0, inheritable: caps0 },
+        CapData { effective: caps1, permitted: caps1, inheritable: caps1 },
+    ];
+
+    let ret = unsafe { libc::syscall(libc::SYS_capget, &mut hdr as *mut _, &mut data as *mut _) };
+    if ret != 0 {
+        return Err(anyhow::anyhow!("capget failed: {}", std::io::Error::last_os_error()));
+    }
+
+    data[0].effective &= !caps0;
+    data[0].permitted &= !caps0;
+    data[0].inheritable &= !caps0;
+    data[1].effective &= !caps1;
+    data[1].permitted &= !caps1;
+    data[1].inheritable &= !caps1;
+
+    let ret = unsafe { libc::syscall(libc::SYS_capset, &mut hdr as *mut _, &data as *const _) };
+    if ret != 0 {
+        return Err(anyhow::anyhow!("capset failed: {}", std::io::Error::last_os_error()));
+    }
+
+    unsafe {
+        libc::prctl(libc::PR_CAP_AMBIENT, libc::PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0);
+    }
+
+    Ok(())
+}
+
 pub fn apply_seccomp_filter(dangerous: bool) -> Result<()> {
     if dangerous {
         return Ok(());
