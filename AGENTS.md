@@ -40,6 +40,7 @@ Do NOT add dependencies without a clear reason. Avoid full-blown container runti
 - Run tests with: `cargo test && cargo clippy -- -D warnings`
 - Run acceptance tests with: `SUDO_ASKPASS=.sudo-askpass.sh sudo -A ./scripts/test_phaseN.sh`
 - **Sudo setup**: The `.sudo-askpass.sh` script provides sudo password for automated testing (password: kdy)
+- **WSL2 fix**: If `sudo` fails with "unable to allocate pty", run: `sudo mount -t devpts devpts /dev/pts`
 
 ### Git Workflow
 - One commit per completed phase

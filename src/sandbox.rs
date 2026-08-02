@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use nix::mount::{mount, MsFlags};
 use nix::sched::{unshare, CloneFlags};
 use nix::sys::signal::Signal;
@@ -55,6 +55,15 @@ fn child_main(config: &SandboxConfig, program: &CString, args: &[CString]) -> Re
 
     unshare(flags)?;
 
+    mount(
+        None::<&str>,
+        "/",
+        None::<&str>,
+        MsFlags::MS_REC | MsFlags::MS_PRIVATE,
+        None::<&str>,
+    )
+    .context("failed to make mounts private")?;
+
     if let Some(ref hostname) = config.hostname {
         sethostname(hostname)?;
     }
@@ -72,12 +81,15 @@ fn child_main(config: &SandboxConfig, program: &CString, args: &[CString]) -> Re
     match unsafe { fork() }? {
         ForkResult::Parent { child } => {
             let status = waitpid(child, None)?;
-            std::process::exit(exit_code_from_status(status));
+            let code = exit_code_from_status(status);
+            drop(rootfs_config);
+            std::process::exit(code);
         }
         ForkResult::Child => {
             if let Some(ref rootfs) = rootfs_config {
                 rootfs.pivot()?;
             }
+            drop(rootfs_config);
             mount_proc()?;
             execvp(program, args)?;
             unreachable!()
