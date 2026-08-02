@@ -19,13 +19,26 @@ ROOTFS=$(mktemp -d)
 trap "rm -rf $ROOTFS" EXIT
 
 echo "Creating test rootfs at $ROOTFS..."
-mkdir -p "$ROOTFS/bin" "$ROOTFS/proc" "$ROOTFS/tmp"
+mkdir -p "$ROOTFS/bin" "$ROOTFS/lib" "$ROOTFS/lib64" "$ROOTFS/proc" "$ROOTFS/tmp"
 
 for bin in sh echo cat ls id hostname ps; do
     if [ -x "/bin/$bin" ]; then
         cp "/bin/$bin" "$ROOTFS/bin/"
     fi
 done
+
+echo "Copying shared libraries..."
+for bin in "$ROOTFS"/bin/*; do
+    ldd "$bin" 2>/dev/null | grep -o '/[^ ]*' | while read -r lib; do
+        dir=$(dirname "$lib")
+        mkdir -p "$ROOTFS$dir"
+        cp -n "$lib" "$ROOTFS$lib" 2>/dev/null || true
+    done
+done
+
+if [ -f /lib64/ld-linux-x86-64.so.2 ]; then
+    cp /lib64/ld-linux-x86-64.so.2 "$ROOTFS/lib64/" 2>/dev/null || true
+fi
 
 echo -n "Test 1: basic rootfs execution... "
 OUTPUT=$($TINYBOX run --root "$ROOTFS" -- echo hello)
