@@ -1,6 +1,7 @@
 mod cgroup;
 mod daemon;
 mod image;
+mod network;
 mod oci;
 mod registry;
 mod rootfs;
@@ -20,6 +21,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum Commands {
     Daemon {
         #[arg(long, default_value = "127.0.0.1:8080")]
@@ -62,6 +64,12 @@ enum Commands {
 
         #[arg(long)]
         image: Option<String>,
+
+        #[arg(long)]
+        network: Option<String>,
+
+        #[arg(short = 'p', long = "publish")]
+        ports: Vec<String>,
 
         #[arg(last = true)]
         command: Vec<String>,
@@ -139,6 +147,8 @@ fn main() -> Result<()> {
             proxy,
             oci,
             image,
+            network,
+            ports,
         } => {
             let (command, root, oci_env) = if let Some(bundle_path) = oci {
                 let bundle = oci::load_bundle(std::path::Path::new(&bundle_path))?;
@@ -167,6 +177,8 @@ fn main() -> Result<()> {
                 rootfs: root.map(std::path::PathBuf::from),
                 env: oci_env,
                 proxy,
+                network,
+                ports,
                 memory: memory_bytes,
                 cpus,
                 cpu_quota,
