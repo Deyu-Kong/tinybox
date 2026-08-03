@@ -2,7 +2,7 @@
 
 A minimal, secure sandbox runtime for running AI Agents in isolated environments, built from scratch in Rust.
 
-![Phase Progress](https://img.shields.io/badge/phase-5%2F8-blue)
+![Phase Progress](https://img.shields.io/badge/phase-7%2F8-blue)
 ![Lines of Code](https://img.shields.io/badge/LOC-973-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -20,7 +20,7 @@ The project covers all six directions of the Agent Infra JD:
 
 ## Current Status
 
-**Phase 5 of 8 completed** (973 lines of Rust code)
+**Phase 7 of 8 completed** (973 lines of Rust code)
 
 ### Completed Features
 
@@ -29,11 +29,11 @@ The project covers all six directions of the Agent Infra JD:
 - ✅ **Phase 3**: Overlayfs rootfs + pivot_root
 - ✅ **Phase 4**: cgroup resource limits (CPU/memory/pids)
 - ✅ **Phase 5**: seccomp + capabilities hardening
+- ✅ **Phase 6**: OCI Bundle support (config.json parsing)
+- ✅ **Phase 7**: Network namespace + proxy environment
 
 ### In Progress
 
-- ⏳ **Phase 6**: OCI Bundle support (config.json parsing)
-- ⏳ **Phase 7**: Network isolation + proxy networking
 - ⏳ **Phase 8**: HTTP API + daemon mode + Prometheus metrics
 
 ## Architecture
@@ -179,6 +179,8 @@ cargo test --test phase2
 cargo test --test phase3
 cargo test --test phase4
 cargo test --test phase5
+cargo test --test phase6
+cargo test --test phase7
 
 # Run acceptance tests (requires root)
 sudo ./scripts/test_phase1.sh
@@ -186,6 +188,8 @@ sudo ./scripts/test_phase2.sh
 sudo ./scripts/test_phase3.sh
 sudo ./scripts/test_phase4.sh
 sudo ./scripts/test_phase5.sh
+sudo ./scripts/test_phase6.sh
+sudo ./scripts/test_phase7.sh
 ```
 
 ## Development Phases
@@ -197,8 +201,8 @@ sudo ./scripts/test_phase5.sh
 | 3 | Overlayfs rootfs + pivot_root | ~150 | ✅ |
 | 4 | cgroup resource limits (CPU/memory/pids) | ~200 | ✅ |
 | 5 | seccomp + capabilities hardening | ~250 | ✅ |
-| 6 | OCI Bundle support (config.json parsing) | ~350 | ⏳ |
-| 7 | Network isolation + proxy networking | ~250 | ⏳ |
+| 6 | OCI Bundle support (config.json parsing) | ~350 | ✅ |
+| 7 | Network namespace + proxy environment | ~250 | ✅ |
 | 8 | HTTP API + daemon mode + Prometheus metrics | ~350 | ⏳ |
 
 ## Known Issues

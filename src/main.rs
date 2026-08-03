@@ -1,4 +1,5 @@
 mod cgroup;
+mod oci;
 mod rootfs;
 mod sandbox;
 mod seccomp;
@@ -67,9 +68,19 @@ fn main() -> Result<()> {
             cpu_period,
             pids_limit,
             dangerous,
-            proxy: _,
-            oci: _,
+            proxy,
+            oci,
         } => {
+            let (command, root, oci_env) = if let Some(bundle_path) = oci {
+                let bundle = oci::load_bundle(std::path::Path::new(&bundle_path))?;
+                (
+                    bundle.command,
+                    Some(bundle.rootfs.to_string_lossy().into_owned()),
+                    bundle.env,
+                )
+            } else {
+                (command, root, Vec::new())
+            };
             let memory_bytes = match memory {
                 Some(s) => Some(parse_memory(&s)?),
                 None => None,
@@ -78,6 +89,8 @@ fn main() -> Result<()> {
                 command,
                 hostname,
                 rootfs: root.map(std::path::PathBuf::from),
+                env: oci_env,
+                proxy,
                 memory: memory_bytes,
                 cpus,
                 cpu_quota,

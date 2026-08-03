@@ -3,7 +3,7 @@ use nix::mount::{mount, MsFlags};
 use nix::sched::{unshare, CloneFlags};
 use nix::sys::signal::Signal;
 use nix::sys::wait::{waitpid, WaitStatus};
-use nix::unistd::{close, execvp, fork, pipe, read, sethostname, ForkResult};
+use nix::unistd::{close, execvp, execvpe, fork, pipe, read, sethostname, ForkResult};
 use std::ffi::CString;
 use std::os::unix::io::{BorrowedFd, IntoRawFd};
 use std::path::PathBuf;
@@ -16,6 +16,8 @@ pub struct SandboxConfig {
     pub command: Vec<String>,
     pub hostname: Option<String>,
     pub rootfs: Option<PathBuf>,
+    pub env: Vec<String>,
+    pub proxy: Option<String>,
     pub memory: Option<u64>,
     pub cpus: Option<f64>,
     pub cpu_quota: Option<i64>,
@@ -102,6 +104,9 @@ fn child_main(config: &SandboxConfig, program: &CString, args: &[CString]) -> Re
     flags.insert(CloneFlags::CLONE_NEWPID);
     flags.insert(CloneFlags::CLONE_NEWNS);
     flags.insert(CloneFlags::CLONE_NEWUTS);
+    if config.proxy.is_none() {
+        flags.insert(CloneFlags::CLONE_NEWNET);
+    }
 
     unshare(flags)?;
 
@@ -143,10 +148,30 @@ fn child_main(config: &SandboxConfig, program: &CString, args: &[CString]) -> Re
             mount_proc()?;
             drop_capabilities(config.dangerous)?;
             apply_seccomp_filter(config.dangerous)?;
-            execvp(program, args)?;
+            let env_values = effective_environment(config);
+            if env_values.is_empty() {
+                execvp(program, args)?;
+            } else {
+                let env: Vec<CString> = env_values
+                    .iter()
+                    .map(|value| CString::new(value.as_str()))
+                    .collect::<std::result::Result<_, _>>()?;
+                execvpe(program, args, &env)?;
+            }
             unreachable!()
         }
     }
+}
+
+fn effective_environment(config: &SandboxConfig) -> Vec<String> {
+    let mut env = config.env.clone();
+    if let Some(proxy) = &config.proxy {
+        for key in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"] {
+            env.push(format!("{}={}", key, proxy));
+        }
+        env.push("NO_PROXY=127.0.0.1,localhost".to_string());
+    }
+    env
 }
 
 fn mount_proc() -> Result<()> {
@@ -196,14 +221,24 @@ mod tests {
 
     #[test]
     fn test_exit_code_exited() {
-        assert_eq!(exit_code_from_status(WaitStatus::Exited(nix::unistd::Pid::from_raw(1), 0)), 0);
-        assert_eq!(exit_code_from_status(WaitStatus::Exited(nix::unistd::Pid::from_raw(1), 42)), 42);
+        assert_eq!(
+            exit_code_from_status(WaitStatus::Exited(nix::unistd::Pid::from_raw(1), 0)),
+            0
+        );
+        assert_eq!(
+            exit_code_from_status(WaitStatus::Exited(nix::unistd::Pid::from_raw(1), 42)),
+            42
+        );
     }
 
     #[test]
     fn test_exit_code_signaled() {
         assert_eq!(
-            exit_code_from_status(WaitStatus::Signaled(nix::unistd::Pid::from_raw(1), Signal::SIGKILL, false)),
+            exit_code_from_status(WaitStatus::Signaled(
+                nix::unistd::Pid::from_raw(1),
+                Signal::SIGKILL,
+                false
+            )),
             128 + 9
         );
     }
@@ -214,6 +249,8 @@ mod tests {
             command: vec![],
             hostname: None,
             rootfs: None,
+            env: Vec::new(),
+            proxy: None,
             memory: None,
             cpus: None,
             cpu_quota: None,
