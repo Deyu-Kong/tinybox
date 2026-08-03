@@ -3,7 +3,7 @@
 A minimal, secure sandbox runtime for running AI Agents in isolated environments, built from scratch in Rust.
 
 ![Phase Progress](https://img.shields.io/badge/phase-8%2F8-blue)
-![Lines of Code](https://img.shields.io/badge/LOC-973-orange)
+![Lines of Code](https://img.shields.io/badge/LOC-1254-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 ## Motivation
@@ -20,7 +20,7 @@ The project covers all six directions of the Agent Infra JD:
 
 ## Current Status
 
-**Phase 8 of 8 completed** (973 lines of Rust code)
+**Phase 8 of 8 completed** (1254 lines of Rust code)
 
 ### Completed Features
 
@@ -33,15 +33,12 @@ The project covers all six directions of the Agent Infra JD:
 - ✅ **Phase 7**: Network namespace + proxy environment
 - ✅ **Phase 8**: HTTP API + daemon mode + Prometheus metrics
 
-### In Progress
-
-
 ## Architecture
 
 ```
 ┌──────────────────────────────────────────────────┐
 │                  tinybox CLI                      │
-│  (clap: run, daemon, list, kill, stats)           │
+│  (run, daemon)                          │
 └──────────┬───────────────────────────┬────────────┘
            │                           │
            ▼                           ▼
@@ -113,9 +110,13 @@ sudo ./target/release/tinybox run \
 sudo ./target/release/tinybox run --dangerous -- /bin/sh
 ```
 
-### CLI Reference
+### CLI Commands
 
+```text
+tinybox run [OPTIONS] -- <COMMAND>...
+tinybox daemon [--listen <ADDRESS>]
 ```
+```text
 USAGE:
     tinybox run [OPTIONS] -- <COMMAND>...
 

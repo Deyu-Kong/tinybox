@@ -27,6 +27,13 @@ pub struct SandboxConfig {
 }
 
 pub fn run_sandbox(config: &SandboxConfig) -> Result<i32> {
+    run_sandbox_with_pid(config, |_| {})
+}
+
+pub fn run_sandbox_with_pid<F>(config: &SandboxConfig, on_pid: F) -> Result<i32>
+where
+    F: FnOnce(nix::unistd::Pid),
+{
     if !cfg!(target_os = "linux") {
         bail!("tinybox only supports Linux");
     }
@@ -73,6 +80,7 @@ pub fn run_sandbox(config: &SandboxConfig) -> Result<i32> {
             if let Some(ref cg) = cgroup {
                 cg.add_process(child.as_raw() as u32)?;
             }
+            on_pid(child);
 
             // SAFETY: write_fd is valid (just created by pipe, not yet closed).
             let borrowed = unsafe { BorrowedFd::borrow_raw(write_fd) };

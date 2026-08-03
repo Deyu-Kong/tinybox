@@ -1,11 +1,13 @@
-use crate::sandbox::{run_sandbox, SandboxConfig};
+use crate::sandbox::{run_sandbox_with_pid, SandboxConfig};
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
+    http::{header::CONTENT_TYPE, StatusCode},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
+use nix::sys::signal::{kill, Signal};
+use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -28,6 +30,7 @@ struct Sandbox {
     id: String,
     status: String,
     exit_code: Option<i32>,
+    pid: Option<i32>,
 }
 
 #[derive(Deserialize)]
@@ -36,13 +39,6 @@ struct CreateRequest {
     command: Vec<String>,
     memory_limit_mb: Option<u64>,
     proxy: Option<String>,
-}
-
-#[derive(Serialize)]
-struct Metrics {
-    sandboxes_total: usize,
-    sandboxes_running: usize,
-    sandboxes_completed: usize,
 }
 
 pub async fn serve(listen: SocketAddr) -> anyhow::Result<()> {
@@ -75,6 +71,7 @@ async fn create(
         id: id.clone(),
         status: "running".into(),
         exit_code: None,
+        pid: None,
     };
     state.sandboxes.lock().unwrap().insert(id.clone(), entry);
     let state_clone = state.clone();
@@ -93,7 +90,13 @@ async fn create(
             pids_limit: None,
             dangerous: false,
         };
-        let result = run_sandbox(&config);
+        let state_for_pid = state_clone.clone();
+        let id_for_pid = id_clone.clone();
+        let result = run_sandbox_with_pid(&config, move |pid| {
+            if let Some(sb) = state_for_pid.sandboxes.lock().unwrap().get_mut(&id_for_pid) {
+                sb.pid = Some(pid.as_raw());
+            }
+        });
         if let Some(sb) = state_clone.sandboxes.lock().unwrap().get_mut(&id_clone) {
             sb.status = "completed".into();
             sb.exit_code = result.ok();
@@ -115,21 +118,28 @@ async fn get_one(Path(id): Path<String>, State(state): State<AppState>) -> impl 
     }
 }
 async fn remove(Path(id): Path<String>, State(state): State<AppState>) -> StatusCode {
-    if state.sandboxes.lock().unwrap().remove(&id).is_some() {
+    let mut sandboxes = state.sandboxes.lock().unwrap();
+    if let Some(sb) = sandboxes.get(&id) {
+        if sb.status == "running" {
+            if let Some(pid) = sb.pid {
+                let _ = kill(Pid::from_raw(pid), Signal::SIGKILL);
+            }
+        }
+        sandboxes.remove(&id);
         StatusCode::NO_CONTENT
     } else {
         StatusCode::NOT_FOUND
     }
 }
-async fn metrics(State(state): State<AppState>) -> Json<Metrics> {
+async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
     let sandboxes = state.sandboxes.lock().unwrap();
     let total = sandboxes.len();
     let running = sandboxes.values().filter(|s| s.status == "running").count();
-    Json(Metrics {
-        sandboxes_total: total,
-        sandboxes_running: running,
-        sandboxes_completed: total - running,
-    })
+    let body = format!(
+        "# HELP tinybox_sandboxes_total Total sandboxes created\n# TYPE tinybox_sandboxes_total counter\ntinybox_sandboxes_total {total}\n# HELP tinybox_sandboxes_running Currently running sandboxes\n# TYPE tinybox_sandboxes_running gauge\ntinybox_sandboxes_running {running}\n# HELP tinybox_sandboxes_completed Completed sandboxes\n# TYPE tinybox_sandboxes_completed gauge\ntinybox_sandboxes_completed {}\n",
+        total - running
+    );
+    ([(CONTENT_TYPE, "text/plain; version=0.0.4")], body)
 }
 
 pub fn parse_listen(value: &str) -> anyhow::Result<SocketAddr> {
