@@ -2,7 +2,7 @@
 
 A minimal, secure sandbox runtime for running AI Agents in isolated environments, built from scratch in Rust.
 
-![Phase Progress](https://img.shields.io/badge/phase-11%2F8-blue)
+![Phase Progress](https://img.shields.io/badge/phase-12%2F8-blue)
 ![Lines of Code](https://img.shields.io/badge/LOC-1254-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -20,7 +20,7 @@ The project covers all six directions of the Agent Infra JD:
 
 ## Current Status
 
-**Phase 11 of 8 completed** (1254 lines of Rust code)
+**Phase 12 of 8 completed** (1254 lines of Rust code)
 
 ### Completed Features
 
@@ -35,6 +35,7 @@ The project covers all six directions of the Agent Infra JD:
 - ✅ **Phase 9**: Local image management (import/list/remove/run --image)
 - ✅ **Phase 10**: Docker Registry image pull
 - ✅ **Phase 11**: Network bridge + port mapping
+- ✅ **Phase 12**: Volume mounting (bind mounts)
 
 ## Architecture
 
@@ -135,6 +136,7 @@ OPTIONS:
     --proxy <URL>           HTTP proxy for network isolation
     --network <MODE>        Network mode (bridge for NAT networking)
     -p, --publish <PORT>    Publish container port (host:container)
+    -v, --volume <VOLUME>   Bind mount volume (host:container[:ro])
     --oci <PATH>            OCI bundle path (Phase 6)
     --image <NAME>          Run from imported image (Phase 9)
 
@@ -144,6 +146,8 @@ EXAMPLES:
     tinybox run --image alpine -- /bin/sh
     tinybox run --network bridge -- ping 8.8.8.8
     tinybox run --network bridge -p 8080:80 -- python3 -m http.server 80
+    tinybox run -v /host/path:/container/path -- ls /container/path
+    tinybox run -v /data:/data:ro -- cat /data/file.txt
     tinybox run --memory 64m -- python3 -c "a = bytearray(200*1024*1024)"
     tinybox run --cpus 0.1 -- stress --cpu 1
 
@@ -227,6 +231,7 @@ sudo ./scripts/test_phase10.sh
 | 9 | Local image management (import/list/remove) | ~150 | ✅ |
 | 10 | Docker Registry image pull | ~150 | ✅ |
 | 11 | Network bridge + port mapping | ~200 | ✅ |
+| 12 | Volume mounting (bind mounts) | ~50 | ✅ |
 
 ## Known Issues
 

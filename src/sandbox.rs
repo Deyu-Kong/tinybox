@@ -21,6 +21,7 @@ pub struct SandboxConfig {
     pub proxy: Option<String>,
     pub network: Option<String>,
     pub ports: Vec<String>,
+    pub volumes: Vec<String>,
     pub memory: Option<u64>,
     pub cpus: Option<f64>,
     pub cpu_quota: Option<i64>,
@@ -184,6 +185,7 @@ fn child_main(config: &SandboxConfig, program: &CString, args: &[CString]) -> Re
             }
             drop(rootfs_config);
             mount_proc()?;
+            mount_volumes(&config.volumes)?;
             drop_capabilities(config.dangerous)?;
             apply_seccomp_filter(config.dangerous)?;
             let env_values = effective_environment(config);
@@ -221,6 +223,35 @@ fn mount_proc() -> Result<()> {
         MsFlags::empty(),
         None::<&str>,
     )?;
+    Ok(())
+}
+
+fn mount_volumes(volumes: &[String]) -> Result<()> {
+    for vol_spec in volumes {
+        let parts: Vec<&str> = vol_spec.split(':').collect();
+        if parts.len() < 2 {
+            bail!("invalid volume spec: {}", vol_spec);
+        }
+        let host_path = parts[0];
+        let container_path = parts[1];
+        let readonly = parts.get(2).map(|s| *s == "ro").unwrap_or(false);
+
+        std::fs::create_dir_all(container_path).ok();
+
+        let mut flags = MsFlags::MS_BIND | MsFlags::MS_REC;
+        if readonly {
+            flags |= MsFlags::MS_RDONLY;
+        }
+
+        mount(
+            Some(host_path),
+            container_path,
+            None::<&str>,
+            flags,
+            None::<&str>,
+        )
+        .with_context(|| format!("failed to mount {} to {}", host_path, container_path))?;
+    }
     Ok(())
 }
 
@@ -303,6 +334,7 @@ mod tests {
             proxy: None,
             network: None,
             ports: Vec::new(),
+            volumes: Vec::new(),
             memory: None,
             cpus: None,
             cpu_quota: None,

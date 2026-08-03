@@ -71,6 +71,9 @@ enum Commands {
         #[arg(short = 'p', long = "publish")]
         ports: Vec<String>,
 
+        #[arg(short = 'v', long = "volume")]
+        volumes: Vec<String>,
+
         #[arg(last = true)]
         command: Vec<String>,
     },
@@ -149,6 +152,7 @@ fn main() -> Result<()> {
             image,
             network,
             ports,
+            volumes,
         } => {
             let (command, root, oci_env) = if let Some(bundle_path) = oci {
                 let bundle = oci::load_bundle(std::path::Path::new(&bundle_path))?;
@@ -179,6 +183,7 @@ fn main() -> Result<()> {
                 proxy,
                 network,
                 ports,
+                volumes,
                 memory: memory_bytes,
                 cpus,
                 cpu_quota,

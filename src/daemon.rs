@@ -85,6 +85,7 @@ async fn create(
             proxy: req.proxy,
             network: None,
             ports: Vec::new(),
+            volumes: Vec::new(),
             memory: req.memory_limit_mb.map(|v| v * 1024 * 1024),
             cpus: None,
             cpu_quota: None,
