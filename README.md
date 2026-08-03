@@ -2,7 +2,7 @@
 
 A minimal, secure sandbox runtime for running AI Agents in isolated environments, built from scratch in Rust.
 
-![Phase Progress](https://img.shields.io/badge/phase-9%2F8-blue)
+![Phase Progress](https://img.shields.io/badge/phase-10%2F8-blue)
 ![Lines of Code](https://img.shields.io/badge/LOC-1254-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -20,7 +20,7 @@ The project covers all six directions of the Agent Infra JD:
 
 ## Current Status
 
-**Phase 8 of 8 completed** (1254 lines of Rust code)
+**Phase 10 of 8 completed** (1254 lines of Rust code)
 
 ### Completed Features
 
@@ -33,6 +33,7 @@ The project covers all six directions of the Agent Infra JD:
 - ✅ **Phase 7**: Network namespace + proxy environment
 - ✅ **Phase 8**: HTTP API + daemon mode + Prometheus metrics
 - ✅ **Phase 9**: Local image management (import/list/remove/run --image)
+- ✅ **Phase 10**: Docker Registry image pull
 
 ## Architecture
 
@@ -143,8 +144,9 @@ EXAMPLES:
 
 IMAGE MANAGEMENT:
     tinybox image import <TAR> --alias <NAME>   Import a rootfs tar as an image
-    tinybox image list                           List imported images
-    tinybox image remove <NAME>                  Remove an imported image
+    tinybox image pull <IMAGE>[:TAG]            Pull image from Docker Registry
+    tinybox image list                          List imported images
+    tinybox image remove <NAME>                 Remove an imported image
 ```
 
 ## Security Model
@@ -201,6 +203,8 @@ sudo ./scripts/test_phase5.sh
 sudo ./scripts/test_phase6.sh
 sudo ./scripts/test_phase7.sh
 sudo ./scripts/test_phase8.sh
+sudo ./scripts/test_phase9.sh
+sudo ./scripts/test_phase10.sh
 ```
 
 ## Development Phases
@@ -216,6 +220,7 @@ sudo ./scripts/test_phase8.sh
 | 7 | Network namespace + proxy environment | ~250 | ✅ |
 | 8 | HTTP API + daemon mode + Prometheus metrics | ~350 | ✅ |
 | 9 | Local image management (import/list/remove) | ~150 | ✅ |
+| 10 | Docker Registry image pull | ~150 | ✅ |
 
 ## Known Issues
 

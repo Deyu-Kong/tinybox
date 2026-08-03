@@ -2,6 +2,7 @@ mod cgroup;
 mod daemon;
 mod image;
 mod oci;
+mod registry;
 mod rootfs;
 mod sandbox;
 mod seccomp;
@@ -74,6 +75,11 @@ enum ImageAction {
         #[arg(long, default_value = "default")]
         alias: String,
     },
+    Pull {
+        image: String,
+        #[arg(long)]
+        alias: Option<String>,
+    },
     List,
     Remove {
         alias: String,
@@ -92,6 +98,23 @@ fn main() -> Result<()> {
             ImageAction::Import { tar, alias } => {
                 let dest = image::import_tar(std::path::Path::new(&tar), &alias)?;
                 println!("imported: {}", dest.display());
+            }
+            ImageAction::Pull { image, alias } => {
+                let image_ref = registry::ImageRef::parse(&image)?;
+                let alias = alias.unwrap_or_else(|| {
+                    image_ref
+                        .repository
+                        .split('/')
+                        .next_back()
+                        .unwrap_or("pulled")
+                        .to_string()
+                });
+                let dest = image::image_store().join(&alias);
+                if dest.exists() {
+                    anyhow::bail!("image alias already exists: {}", dest.display());
+                }
+                registry::pull(&image_ref, &dest)?;
+                println!("pulled: {} -> {}", image, dest.display());
             }
             ImageAction::List => {
                 for name in image::list()? {
