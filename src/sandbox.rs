@@ -183,6 +183,7 @@ fn effective_environment(config: &SandboxConfig) -> Vec<String> {
 }
 
 fn mount_proc() -> Result<()> {
+    std::fs::create_dir_all("/proc").ok();
     mount(
         Some("proc"),
         "/proc",

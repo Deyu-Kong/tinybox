@@ -1,5 +1,6 @@
 mod cgroup;
 mod daemon;
+mod image;
 mod oci;
 mod rootfs;
 mod sandbox;
@@ -22,6 +23,10 @@ enum Commands {
     Daemon {
         #[arg(long, default_value = "127.0.0.1:8080")]
         listen: String,
+    },
+    Image {
+        #[command(subcommand)]
+        action: ImageAction,
     },
     Run {
         #[arg(long)]
@@ -54,8 +59,24 @@ enum Commands {
         #[arg(long)]
         oci: Option<String>,
 
+        #[arg(long)]
+        image: Option<String>,
+
         #[arg(last = true)]
         command: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ImageAction {
+    Import {
+        tar: String,
+        #[arg(long, default_value = "default")]
+        alias: String,
+    },
+    List,
+    Remove {
+        alias: String,
     },
 }
 
@@ -67,6 +88,21 @@ fn main() -> Result<()> {
             let address = daemon::parse_listen(&listen)?;
             tokio::runtime::Runtime::new()?.block_on(daemon::serve(address))?;
         }
+        Commands::Image { action } => match action {
+            ImageAction::Import { tar, alias } => {
+                let dest = image::import_tar(std::path::Path::new(&tar), &alias)?;
+                println!("imported: {}", dest.display());
+            }
+            ImageAction::List => {
+                for name in image::list()? {
+                    println!("{name}");
+                }
+            }
+            ImageAction::Remove { alias } => {
+                image::remove(&alias)?;
+                println!("removed: {alias}");
+            }
+        },
         Commands::Run {
             command,
             root,
@@ -79,6 +115,7 @@ fn main() -> Result<()> {
             dangerous,
             proxy,
             oci,
+            image,
         } => {
             let (command, root, oci_env) = if let Some(bundle_path) = oci {
                 let bundle = oci::load_bundle(std::path::Path::new(&bundle_path))?;
@@ -86,6 +123,13 @@ fn main() -> Result<()> {
                     bundle.command,
                     Some(bundle.rootfs.to_string_lossy().into_owned()),
                     bundle.env,
+                )
+            } else if let Some(image_name) = image {
+                let path = image::resolve(&image_name)?;
+                (
+                    command,
+                    Some(path.to_string_lossy().into_owned()),
+                    Vec::new(),
                 )
             } else {
                 (command, root, Vec::new())

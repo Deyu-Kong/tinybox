@@ -56,13 +56,24 @@ pub fn drop_capabilities(dangerous: bool) -> Result<()> {
     };
 
     let mut data = [
-        CapData { effective: caps0, permitted: caps0, inheritable: caps0 },
-        CapData { effective: caps1, permitted: caps1, inheritable: caps1 },
+        CapData {
+            effective: caps0,
+            permitted: caps0,
+            inheritable: caps0,
+        },
+        CapData {
+            effective: caps1,
+            permitted: caps1,
+            inheritable: caps1,
+        },
     ];
 
     let ret = unsafe { libc::syscall(libc::SYS_capget, &mut hdr as *mut _, &mut data as *mut _) };
     if ret != 0 {
-        return Err(anyhow::anyhow!("capget failed: {}", std::io::Error::last_os_error()));
+        return Err(anyhow::anyhow!(
+            "capget failed: {}",
+            std::io::Error::last_os_error()
+        ));
     }
 
     data[0].effective &= !caps0;
@@ -74,11 +85,20 @@ pub fn drop_capabilities(dangerous: bool) -> Result<()> {
 
     let ret = unsafe { libc::syscall(libc::SYS_capset, &mut hdr as *mut _, &data as *const _) };
     if ret != 0 {
-        return Err(anyhow::anyhow!("capset failed: {}", std::io::Error::last_os_error()));
+        return Err(anyhow::anyhow!(
+            "capset failed: {}",
+            std::io::Error::last_os_error()
+        ));
     }
 
     unsafe {
-        libc::prctl(libc::PR_CAP_AMBIENT, libc::PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0);
+        libc::prctl(
+            libc::PR_CAP_AMBIENT,
+            libc::PR_CAP_AMBIENT_CLEAR_ALL,
+            0,
+            0,
+            0,
+        );
     }
 
     Ok(())
@@ -367,7 +387,9 @@ pub fn apply_seccomp_filter(dangerous: bool) -> Result<()> {
     )
     .context("failed to create seccomp filter")?;
 
-    let program: BpfProgram = filter.try_into().context("failed to compile seccomp filter")?;
+    let program: BpfProgram = filter
+        .try_into()
+        .context("failed to compile seccomp filter")?;
 
     apply_filter_all_threads(&program).context("failed to apply seccomp filter")?;
 

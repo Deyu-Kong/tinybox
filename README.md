@@ -2,7 +2,7 @@
 
 A minimal, secure sandbox runtime for running AI Agents in isolated environments, built from scratch in Rust.
 
-![Phase Progress](https://img.shields.io/badge/phase-8%2F8-blue)
+![Phase Progress](https://img.shields.io/badge/phase-9%2F8-blue)
 ![Lines of Code](https://img.shields.io/badge/LOC-1254-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -32,6 +32,7 @@ The project covers all six directions of the Agent Infra JD:
 - ✅ **Phase 6**: OCI Bundle support (config.json parsing)
 - ✅ **Phase 7**: Network namespace + proxy environment
 - ✅ **Phase 8**: HTTP API + daemon mode + Prometheus metrics
+- ✅ **Phase 9**: Local image management (import/list/remove/run --image)
 
 ## Architecture
 
@@ -131,12 +132,19 @@ OPTIONS:
     --dangerous             Disable seccomp and capability restrictions
     --proxy <URL>           HTTP proxy for network isolation
     --oci <PATH>            OCI bundle path (Phase 6)
+    --image <NAME>          Run from imported image (Phase 9)
 
 EXAMPLES:
     tinybox run -- echo "hello"
     tinybox run --root /tmp/alpine-rootfs -- /bin/sh
+    tinybox run --image alpine -- /bin/sh
     tinybox run --memory 64m -- python3 -c "a = bytearray(200*1024*1024)"
     tinybox run --cpus 0.1 -- stress --cpu 1
+
+IMAGE MANAGEMENT:
+    tinybox image import <TAR> --alias <NAME>   Import a rootfs tar as an image
+    tinybox image list                           List imported images
+    tinybox image remove <NAME>                  Remove an imported image
 ```
 
 ## Security Model
@@ -207,6 +215,7 @@ sudo ./scripts/test_phase8.sh
 | 6 | OCI Bundle support (config.json parsing) | ~350 | ✅ |
 | 7 | Network namespace + proxy environment | ~250 | ✅ |
 | 8 | HTTP API + daemon mode + Prometheus metrics | ~350 | ✅ |
+| 9 | Local image management (import/list/remove) | ~150 | ✅ |
 
 ## Known Issues
 
