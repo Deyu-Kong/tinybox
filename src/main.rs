@@ -1,5 +1,6 @@
 mod cgroup;
 mod daemon;
+mod exec;
 mod image;
 mod network;
 mod oci;
@@ -73,6 +74,13 @@ enum Commands {
 
         #[arg(short = 'v', long = "volume")]
         volumes: Vec<String>,
+
+        #[arg(last = true)]
+        command: Vec<String>,
+    },
+    Exec {
+        #[arg(long)]
+        pid: u32,
 
         #[arg(last = true)]
         command: Vec<String>,
@@ -192,6 +200,10 @@ fn main() -> Result<()> {
                 dangerous,
             };
             let code = run_sandbox(&config)?;
+            std::process::exit(code);
+        }
+        Commands::Exec { pid, command } => {
+            let code = exec::exec_in_container(pid, &command)?;
             std::process::exit(code);
         }
     }

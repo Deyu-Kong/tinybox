@@ -2,7 +2,7 @@
 
 A minimal, secure sandbox runtime for running AI Agents in isolated environments, built from scratch in Rust.
 
-![Phase Progress](https://img.shields.io/badge/phase-12%2F8-blue)
+![Phase Progress](https://img.shields.io/badge/phase-13%2F8-blue)
 ![Lines of Code](https://img.shields.io/badge/LOC-1254-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -20,7 +20,7 @@ The project covers all six directions of the Agent Infra JD:
 
 ## Current Status
 
-**Phase 12 of 8 completed** (1254 lines of Rust code)
+**Phase 13 of 8 completed** (1254 lines of Rust code)
 
 ### Completed Features
 
@@ -36,6 +36,7 @@ The project covers all six directions of the Agent Infra JD:
 - ✅ **Phase 10**: Docker Registry image pull
 - ✅ **Phase 11**: Network bridge + port mapping
 - ✅ **Phase 12**: Volume mounting (bind mounts)
+- ✅ **Phase 13**: Exec into running containers
 
 ## Architecture
 
@@ -119,6 +120,7 @@ sudo ./target/release/tinybox run --dangerous -- /bin/sh
 ```text
 tinybox run [OPTIONS] -- <COMMAND>...
 tinybox daemon [--listen <ADDRESS>]
+tinybox exec --pid <PID> -- <COMMAND>...
 ```
 ```text
 USAGE:
@@ -150,6 +152,10 @@ EXAMPLES:
     tinybox run -v /data:/data:ro -- cat /data/file.txt
     tinybox run --memory 64m -- python3 -c "a = bytearray(200*1024*1024)"
     tinybox run --cpus 0.1 -- stress --cpu 1
+
+EXEC INTO RUNNING CONTAINER:
+    tinybox exec --pid <PID> -- /bin/sh
+    tinybox exec --pid <PID> -- cat /proc/1/status
 
 IMAGE MANAGEMENT:
     tinybox image import <TAR> --alias <NAME>   Import a rootfs tar as an image
@@ -232,6 +238,7 @@ sudo ./scripts/test_phase10.sh
 | 10 | Docker Registry image pull | ~150 | ✅ |
 | 11 | Network bridge + port mapping | ~200 | ✅ |
 | 12 | Volume mounting (bind mounts) | ~50 | ✅ |
+| 13 | Exec into running containers | ~50 | ✅ |
 
 ## Known Issues
 
