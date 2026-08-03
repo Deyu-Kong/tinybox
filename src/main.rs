@@ -1,4 +1,5 @@
 mod cgroup;
+mod daemon;
 mod oci;
 mod rootfs;
 mod sandbox;
@@ -18,6 +19,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    Daemon {
+        #[arg(long, default_value = "127.0.0.1:8080")]
+        listen: String,
+    },
     Run {
         #[arg(long)]
         root: Option<String>,
@@ -58,6 +63,10 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Daemon { listen } => {
+            let address = daemon::parse_listen(&listen)?;
+            tokio::runtime::Runtime::new()?.block_on(daemon::serve(address))?;
+        }
         Commands::Run {
             command,
             root,
@@ -102,4 +111,5 @@ fn main() -> Result<()> {
             std::process::exit(code);
         }
     }
+    Ok(())
 }
