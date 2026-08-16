@@ -1,407 +1,379 @@
-# tinybox — Issue & Remediation Plan
+# tinybox — 问题与修复计划
 
-This document is the authoritative, line-level audit of the tinybox codebase.
-It records every defect discovered during the 2026-08-16 review, classifies it
-by severity, and proposes a concrete fix. The README and AGENTS.md are kept in
-sync with the status here; "Completed" in those docs refers only to features
-that satisfy the acceptance criteria **and** have no open P0/P1 item below.
+本文件是 tinybox 代码库的权威逐行审计。它记录 2026-08-16 审查中发现的
+每一个缺陷，按严重度分类，并给出具体修法。README 与 AGENTS.md 与此处的
+状态保持同步；那些文档里的"完成"仅指满足验收标准**且**无下列开放 P0/P1
+项的功能。
 
-> **Two tracks.** This file owns the **remediation track (M0–M4)** — bringing
-> today's claimed features up to spec. [VISION.md](VISION.md) owns the
-> **research track (R0–R3)** — the Agent-aware dynamic capability layer that
-> distinguishes tinybox from runc. Dependency rule: R0 may run in parallel with
-> M2; R1 starts only after M2 closes. When the two disagree, VISION.md wins on
-> *forward planning*; PLAN.md wins on *current defect status*.
+> **两条轨。** 本文件管**修复轨（M0–M4）**——把今天声称的功能做到合规。
+> [VISION.md](VISION.md) 管**研究轨（R0–R3）**——让 tinybox 区别于 runc
+> 的 Agent 感知动态能力层。依赖规则：R0 可与 M2 并行；R1 只在 M2 关闭后
+> 开始。两者冲突时，VISION.md 在*前瞻规划*上胜出；PLAN.md 在*当前缺陷
+> 状态*上胜出。
 
-Conventions:
-- `file:line` references use the tree as of commit `b73c7b1` (phase 13).
-- Severity: **P0** = isolation/security broken · **P1** = correctness bug or
-  documented feature not actually working · **P2** = claimed feature is shallow
-  / incomplete · **P3** = polish, tech debt, non-blocking.
-- Each item lists: **Problem · Location · Impact · Fix**.
+约定：
+- `file:line` 引用以提交 `b73c7b1`（phase 13）的代码树为准。
+- 严重度：**P0** = 隔离/安全被打破 · **P1** = 正确性 bug 或文档声称的功能
+  实际不工作 · **P2** = 声称的功能浅薄/不完整 · **P3** = 打磨、技术债、
+  非阻塞。
+- 每条含：**问题 · 位置 · 影响 · 修法**。
 
 ---
 
-## Summary
+## 摘要
 
-| Severity | Count | Status |
+| 严重度 | 数量 | 状态 |
 |----------|-------|--------|
-| P0 (isolation/security) | 4 | ✅ all resolved (M1 complete, 2026-08-16) |
-| P1 (correctness/contradiction) | 5 | 1 resolved (P1-2), 4 open |
-| P2 (shallow feature) | 5 | open |
-| P3 (polish) | 6 | open (one incidental fix landed) |
+| P0（隔离/安全） | 4 | ✅ 全部解决（M1 完成，2026-08-16） |
+| P1（正确性/矛盾） | 5 | 1 已解决（P1-2），4 开放 |
+| P2（功能浅薄） | 5 | 开放 |
+| P3（打磨） | 6 | 开放（一处附带已修） |
 
-**P0 isolation holes are closed.** The four P0 items were resolved in
-Milestone M1 (2026-08-16): the bridge/veth/NAT path was removed entirely
-(Option A — `src/network.rs` deleted, `--network`/`-p` flags removed), the
-sandbox now **always** unshares `CLONE_NEWNET` so `--proxy` is real
-isolation (loopback-only + env vars), the seccomp allow-list had its escape
-primitives removed and `clone` restricted to forbid `CLONE_NEW*` flags, and
-the capability bounding set is now cleared via `PR_CAPBSET_DROP`.
+**P0 隔离漏洞已关闭。** 四个 P0 项在里程碑 M1（2026-08-16）解决：
+bridge/veth/NAT 路径被整体删除（Option A——`src/network.rs` 删除，
+`--network`/`-p` flags 移除），沙箱现在**始终** unshare `CLONE_NEWNET`
+使 `--proxy` 成为真隔离（loopback-only + env vars），seccomp 白名单的
+逃逸原语被移除且 `clone` 被限制以禁止 `CLONE_NEW*` flags，capability
+bounding set 经 `PR_CAPBSET_DROP` 清空。
 
-The process-isolation skeleton (namespaces + overlayfs + cgroups + seccomp +
-caps) is now a defensible barrier for the `tinybox run` path. Remaining open
-items (P1 OCI field honoring, P2 rootfs/device hardening, etc.) are
-correctness/depth issues, not escape holes. tinybox is still **rootful** and
-lacks `/dev`/`/tmp`/`/sys` hardening, so it is not yet a production-grade
-boundary — but it no longer leaks to the host.
+进程隔离骨架（namespaces + overlayfs + cgroups + seccomp + caps）现在对
+`tinybox run` 路径是一道可辩护的屏障。剩余开放项（P1 OCI 字段 honoring、
+P2 rootfs/device 硬化等）是正确性/纵深问题，非逃逸洞。tinybox 仍为
+**rootful** 且缺 `/dev`/`/tmp`/`/sys` 硬化，故尚非生产级屏障——但已不
+泄漏到宿主。
 
 ---
 
-## P0 — Isolation / Security ✅ RESOLVED (M1)
+## P0 — 隔离 / 安全 ✅ 已解决（M1）
 
-> All four P0 items below were fixed on 2026-08-16 (commit after `0531141`).
-> The text is retained as the historical record of the defect + fix.
+> 下面四条 P0 均在 2026-08-16 修复（`0531141` 之后的提交）。原文保留为
+> 缺陷 + 修法的历史记录。
 
-### P0-1 `--network bridge` configures the host network instead of the sandbox ✅
-- **Problem**: When `--network` is set, `child_main` does **not** add
-  `CLONE_NEWNET` to the `unshare` flags. The parent then calls
-  `network::move_veth_to_ns(child_pid)` while the child is still blocked on the
-  sync pipe — i.e. still in the host netns. The veth therefore stays in the host
-  netns, and `configure_container_network` assigns `172.20.x.y` to an interface
-  and installs a default route **on the host**. This is network leakage, not
-  isolation.
-- **Location**: `src/sandbox.rs:141-143` (NEWNET gated on `proxy.is_none() &&
-  network.is_none()`), `src/sandbox.rs:98` (parent calls `move_veth_to_ns`),
-  `src/network.rs:113,122`.
-- **Impact**: Any `--network bridge` sandbox mutates host routes/interfaces.
-  Potentially disrupts host connectivity and is a privilege boundary violation.
-- **Fix (two options, decision required — see Decision Log 2026-08-16)**:
-  - **Option A (align with AGENTS.md)**: delete `network.rs` bridge/NAT path
-    entirely; keep proxy-only. `--network` becomes a no-op alias for the
-    default (no NEWNET) or is removed. Restores documented design, drops
-    ~187 LOC, removes the `ip`/`iptables` binary dependency.
-  - **Option B (keep bridge, fix it)**: in `child_main`, always unshare
-    `CLONE_NEWNET` when `--network` is set; move the `move_veth_to_ns` call to
-    **after** the child has unshared (re-order the pipe sync so the parent
-    moves the veth once the child's netns exists). Then `configure_container_network`
-    runs inside the child post-unshare. Add a regression test asserting the host
-    route table is unchanged after `--network bridge` run.
-- **Recommendation**: Option A for v0.x (matches the documented "proxy-based,
-  no bridge" decision and the "no TUN/TAP, no bridge" constraint). Revisit
-  bridge as a v1.0 opt-in once seccomp + cap story is solid.
-- **Resolution (2026-08-16, Option A taken)**: `src/network.rs` deleted
-  entirely; `--network` and `-p`/`--publish` flags removed from `main.rs`;
-  `SandboxConfig.network`/`ports` fields removed; the bridge/veth/port-mapping
-  blocks in `sandbox.rs` removed; `scripts/test_phase11.sh` deleted (it tested
-  the removed bridge). The `ip`/`iptables` binary dependency is gone. P0-2
-  (below) covers the resulting `--proxy` semantics.
+### P0-1 `--network bridge` 把网络配到了宿主而非沙箱 ✅
+- **问题**：设了 `--network` 时，`child_main` **不**把 `CLONE_NEWNET`
+  加进 `unshare` flags。父进程随后在子进程仍阻塞在同步 pipe 上时（即
+  仍在宿主 netns）调 `network::move_veth_to_ns(child_pid)`。于是 veth 留
+  在宿主 netns，`configure_container_network` 把 `172.20.x.y` 分配给一个
+  接口并装默认路由**到宿主上**。这是网络泄漏，不是隔离。
+- **位置**：`src/sandbox.rs:141-143`（NEWNET 门控为 `proxy.is_none() &&
+  network.is_none()`）、`src/sandbox.rs:98`（父调 `move_veth_to_ns`）、
+  `src/network.rs:113,122`。
+- **影响**：任何 `--network bridge` 沙箱都改动宿主路由/接口。可能破坏
+  宿主连通性，是权限边界违例。
+- **修法（两选项，需决策——见决策日志 2026-08-16）**：
+  - **Option A（与 AGENTS.md 一致）**：删除 `network.rs` 的 bridge/NAT
+    路径；保持 proxy-only。`--network` 变 no-op 或移除。恢复文档设计，
+    减 ~187 LOC，去掉 `ip`/`iptables` 二进制依赖。
+  - **Option B（保留 bridge，修好）**：`child_main` 在 `--network` 时
+    始终 unshare `CLONE_NEWNET`；把 `move_veth_to_ns` 调用挪到子进程
+    unshare **之后**（重排 pipe 同步，让父进程在子 netns 存在后再移
+    veth）。然后 `configure_container_network` 在子进程 unshare 后跑。
+    加回归测试断言 `--network bridge` 后宿主路由表不变。
+- **建议**：v0.x 选 Option A（契合文档"proxy-based, no bridge"决定与
+  "no TUN/TAP, no bridge"约束）。seccomp + cap 稳固后再作为 v1.0 opt-in
+  重审 bridge。
+- **解决（2026-08-16，取 Option A）**：`src/network.rs` 整体删除；
+  `--network` 与 `-p`/`--publish` flags 从 `main.rs` 移除；
+  `SandboxConfig.network`/`ports` 字段移除；`sandbox.rs` 的
+  bridge/veth/端口映射块移除；`scripts/test_phase11.sh` 删除（它测的是
+  已删的 bridge）。`ip`/`iptables` 二进制依赖随之消失。P0-2（下）覆盖
+  由此产生的 `--proxy` 语义。
 
-### P0-2 `--proxy` provides no isolation ✅
-- **Problem**: `--proxy <URL>` only pushes `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`
-  env vars. No `CLONE_NEWNET` is created when `--proxy` is set, so the sandbox
-  shares the host netns; any binary that ignores the proxy env bypasses it.
-- **Location**: `src/sandbox.rs:141-143`, `src/sandbox.rs:206` (`effective_environment`).
-- **Impact**: The Phase 7 acceptance claim "`--proxy ... wget` succeeds" is
-  vacuously true — it succeeds because the sandbox has full host network, not
-  because traffic is proxied. Reverse claim ("`ping 8.8.8.8` → unreachable")
-  only holds when **neither** `--proxy` nor `--network` is passed.
-- **Fix**: Always unshare `CLONE_NEWNET`. For `--proxy` mode, keep the netns
-  empty (only `lo`) and set the env vars; for `--network bridge`, run the veth
-  setup inside the child. Make the Phase 7 acceptance test assert that
-  `ping 8.8.8.8` fails **with** `--proxy` set (only loopback reachable).
-- **Resolution (2026-08-16)**: `child_main` now always inserts `CLONE_NEWNET`
-  (the `proxy.is_none() && network.is_none()` gate was removed). `--proxy`
-  therefore yields a loopback-only netns + env vars. Regression:
-  `scripts/test_phase7.sh` Test 3 asserts `--proxy` mode has no default route.
+### P0-2 `--proxy` 不提供隔离 ✅
+- **问题**：`--proxy <URL>` 只推 `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`
+  env vars。设 `--proxy` 时不创建 `CLONE_NEWNET`，故沙箱共享宿主 netns；
+  任何忽略 proxy env 的二进制都绕过它。
+- **位置**：`src/sandbox.rs:141-143`、`src/sandbox.rs:206`
+  （`effective_environment`）。
+- **影响**：Phase 7 验收"`--proxy ... wget` 成功"是空洞为真——成功是因为
+  沙箱有全部宿主网络，而非流量走了代理。反向断言（"`ping 8.8.8.8` →
+  unreachable"）仅在**既未** `--proxy` **又未** `--network` 时成立。
+- **修法**：始终 unshare `CLONE_NEWNET`。`--proxy` 模式下让 netns 空
+  （只有 `lo`）并设 env vars；`--network bridge` 下在子进程内跑 veth
+  设置。让 Phase 7 验收断言设了 `--proxy` 时 `ping 8.8.8.8` 失败（只
+  loopback 可达）。
+- **解决（2026-08-16）**：`child_main` 现在始终插入 `CLONE_NEWNET`
+  （`proxy.is_none() && network.is_none()` 门控已移除）。`--proxy` 因此
+  产出 loopback-only netns + env vars。回归：`scripts/test_phase7.sh`
+  Test 3 断言 `--proxy` 模式无默认路由。
 
-### P0-3 seccomp allow-list contains escape primitives ✅
-- **Problem**: The allow-list permits syscalls that are well-known container
-  escape / host-interference primitives:
-  - `clone` (no argument filtering) — a sandboxed process can
-    `clone(CLONE_NEWUSER | CLONE_NEWNET | CLONE_NEWNS)` to build fresh
-    namespaces and sidestep the missing `unshare`/`setns`/`pivot_root` blocks.
-  - `open_by_handle_at` — combined with the still-present
-    `CAP_DAC_READ_SEARCH`, this is a classic container-escape primitive.
-  - `process_vm_readv` / `process_vm_writev` — cross-process memory R/W.
-  - `perf_event_open`, `ioprio_set`, `mbind`, `set_mempolicy`,
-    `migrate_pages`, `move_pages` — host resource interference / side channels.
-- **Location**: `src/seccomp.rs:163,349,353,357-358` and the cap drop list at
-  `src/seccomp.rs:20-38`.
-- **Impact**: Violates AGENTS.md "default seccomp policy must prevent escape."
-- **Fix**:
-  1. Add `SeccompRule` argument conditions on `clone` to allow only
-     `CLONE_VFORK | SIGCHLD`-style flags (or replace `clone` with `clone3`
-     restricted to `exit_signal`). Block `CLONE_NEW*` bits.
-  2. Remove `open_by_handle_at`, `process_vm_readv`, `process_vm_writev`,
-     `perf_event_open`, `ioprio_set`, `mbind`, `set_mempolicy`,
-     `migrate_pages`, `move_pages` from the allow-list.
-  3. Add `CAP_DAC_READ_SEARCH`, `CAP_NET_RAW`, `CAP_SYSLOG`,
-     `CAP_AUDIT_*`, `CAP_SETFCAP` to the dropped set.
-  4. Add a `// SAFETY:` note documenting the residual risk and the
-     `--dangerous` escape hatch.
-- **Resolution (2026-08-16)**: all four sub-fixes landed in `src/seccomp.rs`.
-  `clone` now carries a `SeccompCmpOp::MaskedEq(0x7E020000)` rule on arg0 so
-  any `CLONE_NEW*` bit → SIGSYS; `clone3` remains absent from the allow-list.
-  The nine escape/interference syscalls were removed. `DANGEROUS_CAPS` grew
-  from 8 → 14 (added `CAP_DAC_READ_SEARCH`, `CAP_NET_RAW`, `CAP_AUDIT_WRITE`,
-  `CAP_AUDIT_CONTROL`, `CAP_SETFCAP`, `CAP_SYSLOG`). Rule-building was
-  extracted into `build_rules()` for unit testing. Regressions:
-  `scripts/test_phase5.sh` Test 6 (`clone(CLONE_NEWUSER)` → SIGSYS 159) and
-  two new seccomp unit tests (`test_clone_rule_blocks_namespace_flags`,
-  `test_escape_syscalls_excluded`). Normal fork (`clone(SIGCHLD)`) still
-  passes (Test 5).
+### P0-3 seccomp 白名单含逃逸原语 ✅
+- **问题**：白名单允许一些众所周知的容器逃逸/宿主干扰原语：
+  - `clone`（无参数过滤）——沙箱进程可
+    `clone(CLONE_NEWUSER | CLONE_NEWNET | CLONE_NEWNS)` 建新 namespace
+    绕过缺失的 `unshare`/`setns`/`pivot_root` 拦截。
+  - `open_by_handle_at`——配合仍在场的 `CAP_DAC_READ_SEARCH`，是经典
+    容器逃逸原语。
+  - `process_vm_readv` / `process_vm_writev`——跨进程内存读写。
+  - `perf_event_open`、`ioprio_set`、`mbind`、`set_mempolicy`、
+    `migrate_pages`、`move_pages`——宿主资源干扰/侧信道。
+- **位置**：`src/seccomp.rs:163,349,353,357-358` 及 cap 下调列表
+  `src/seccomp.rs:20-38`。
+- **影响**：违反 AGENTS.md "default seccomp policy must prevent escape"。
+- **修法**：
+  1. 给 `clone` 加 `SeccompRule` 参数条件，只允许
+     `CLONE_VFORK | SIGCHLD` 风格 flags（或用 `clone3` 限制
+     `exit_signal` 替代）。屏蔽 `CLONE_NEW*` bits。
+  2. 从白名单移除 `open_by_handle_at`、`process_vm_readv`、
+     `process_vm_writev`、`perf_event_open`、`ioprio_set`、`mbind`、
+     `set_mempolicy`、`migrate_pages`、`move_pages`。
+  3. 把 `CAP_DAC_READ_SEARCH`、`CAP_NET_RAW`、`CAP_SYSLOG`、
+     `CAP_AUDIT_*`、`CAP_SETFCAP` 加入下调集。
+  4. 加 `// SAFETY:` 注释记录残留风险与 `--dangerous` 逃生口。
+- **解决（2026-08-16）**：四条子修都落在 `src/seccomp.rs`。`clone` 现在
+  带 `SeccompCmpOp::MaskedEq(0x7E020000)` 规则于 arg0，任何 `CLONE_NEW*`
+  bit → SIGSYS；`clone3` 仍不在白名单。九个逃逸/干扰 syscall 已移除。
+  `DANGEROUS_CAPS` 8 → 14（加 `CAP_DAC_READ_SEARCH`、`CAP_NET_RAW`、
+  `CAP_AUDIT_WRITE`、`CAP_AUDIT_CONTROL`、`CAP_SETFCP`、`CAP_SYSLOG`）。
+  规则构建抽出为 `build_rules()` 以便单测。回归：`scripts/test_phase5.sh`
+  Test 6（`clone(CLONE_NEWUSER)` → SIGSYS 159）及两个新 seccomp 单测
+  （`test_clone_rule_blocks_namespace_flags`、`test_escape_syscalls_excluded`）。
+  正常 fork（`clone(SIGCHLD)`）仍过（Test 5）。
 
-### P0-4 capability bounding set is never cleared ✅
-- **Problem**: `drop_capabilities` clears effective/permitted/inheritable/
-  ambient sets but never calls `prctl(PR_CAPBSET_DROP, ...)`. A setuid binary
-  exec'd inside the sandbox re-acquires dropped caps from the bounding set on
-  `execve`.
-- **Location**: `src/seccomp.rs:40-95` (no `PR_CAPBSET_DROP`).
-- **Impact**: A sandbox that exec's a setuid-root binary regains `CAP_SYS_ADMIN`
-  etc., defeating the cap drop.
-- **Fix**: After clearing effective/permitted/inheritable, iterate the dropped
-  cap list and call `prctl(PR_CAPBSET_DROP, cap)` for each. Add a unit test
-  that reads `/proc/self/status` `CapBnd` and asserts the dangerous caps are
-  absent.
-- **Resolution (2026-08-16)**: `drop_capabilities` now loops `DANGEROUS_CAPS`
-  and calls `libc::prctl(PR_CAPBSET_DROP, cap, ...)` for each. Regressions:
-  `scripts/test_phase5.sh` Test 7 asserts `CapBnd` has `CAP_SYS_ADMIN` (bit
-  21) cleared; `tests/phase5.rs::test_capabilities_dropped` extended to also
-  assert `CapBnd` for `CAP_SYS_ADMIN` + `CAP_NET_ADMIN`.
+### P0-4 capability bounding set 从未清空 ✅
+- **问题**：`drop_capabilities` 清 effective/permitted/inheritable/ambient
+  集但从不调 `prctl(PR_CAPBSET_DROP, ...)`。沙箱内 exec 的 setuid 二进制
+  在 `execve` 时从 bounding set 重新获得已下调的 cap。
+- **位置**：`src/seccomp.rs:40-95`（无 `PR_CAPBSET_DROP`）。
+- **影响**：exec 了 setuid-root 二进制的沙箱重获 `CAP_SYS_ADMIN` 等，
+  cap 下调失效。
+- **修法**：清完 effective/permitted/inheritable 后，遍历下调列表对每个
+  调 `prctl(PR_CAPBSET_DROP, cap)`。加单测读 `/proc/self/status` 的
+  `CapBnd` 并断言危险 cap 不在。
+- **解决（2026-08-16）**：`drop_capabilities` 现在遍历 `DANGEROUS_CAPS`
+  并对每个调 `libc::prctl(PR_CAPBSET_DROP, cap, ...)`。回归：
+  `scripts/test_phase5.sh` Test 7 断言 `CapBnd` 的 `CAP_SYS_ADMIN`（bit 21）
+  已清；`tests/phase5.rs::test_capabilities_dropped` 扩展为也断言 `CapBnd`
+  的 `CAP_SYS_ADMIN` + `CAP_NET_ADMIN`。
 
 ---
 
-## P1 — Correctness / Contradictions
+## P1 — 正确性 / 矛盾
 
-### P1-1 OCI support ignores `linux.namespaces` (and almost everything else)
-- **Problem**: `OciConfig` deserializes only `process.{args,env}` and
-  `root.path`. The Phase 6 acceptance config includes `linux.namespaces` —
-  tinybox silently ignores them and always creates the same namespace set.
-  `root.readonly`, `mounts`, `process.{cwd,user,capabilities}`,
-  `linux.{resources,seccomp,sysctl,cgroupsPath}` are all dropped.
-- **Location**: `src/oci.rs:7-30`.
-- **Impact**: "Phase 6 ✅ OCI Bundle support" is misleading — only ~3 of the
-  claimed "core 10" fields are honored. An OCI bundle that relies on a *subset*
-  of namespaces (e.g. only `pid` + `mount`) will get a different (broader)
-  isolation set than requested.
-- **Fix**: Extend `OciConfig` to at least honor:
-  `root.readonly` (apply `MS_RDONLY` to the overlay),
-  `process.cwd`, `process.user.{uid,gid}`,
-  `hostname`, and `linux.namespaces` (drive which `CLONE_NEW*` flags to set in
-  `child_main`). Document the remaining unsupported fields as explicitly
-  ignored. Update the Phase 6 acceptance test to assert a namespace-restricted
-  config actually restricts namespaces.
+### P1-1 OCI 支持忽略 `linux.namespaces`（以及几乎其它一切）
+- **问题**：`OciConfig` 只反序列化 `process.{args,env}` 与 `root.path`。
+  Phase 6 验收 config 含 `linux.namespaces`——tinybox 静默忽略它们，永远
+  建同一套 namespace。`root.readonly`、`mounts`、
+  `process.{cwd,user,capabilities}`、`linux.{resources,seccomp,sysctl,cgroupsPath}`
+  全丢。
+- **位置**：`src/oci.rs:7-30`。
+- **影响**："Phase 6 ✅ OCI Bundle 支持"有误导——声称"核心 10 字段"
+  实际只 honor ~3 个。一个依赖 namespace *子集*（如只 `pid`+`mount`）的
+  OCI bundle 会拿到比请求更宽（非更窄）的隔离集。
+- **修法**：扩展 `OciConfig` 至少 honor：`root.readonly`（对 overlay 加
+  `MS_RDONLY`）、`process.cwd`、`process.user.{uid,gid}`、`hostname`、
+  `linux.namespaces`（驱动 `child_main` 里设哪些 `CLONE_NEW*` flag）。把
+  其余不支持字段明确记为忽略。更新 Phase 6 验收测试断言一个
+  namespace-restricted config 实际限制了 namespace。
 
-### P1-2 `ip`/`iptables` non-zero exit is silently treated as success ✅
-- **Problem**: Throughout `network.rs`, `.status().context(...)?` only
-  propagates the `io::Error` from spawning the command; a non-zero exit of
-  `ip`/`iptables` is swallowed and treated as success.
-- **Location**: `src/network.rs:40,46,50,67,76,86,97,107,116,126,...`.
-- **Impact**: On a host without `ip`/`iptables`, or on any rule-insert
-  failure, tinybox reports success while networking is broken. Coupled with
-  P0-1, the failure is silent and dangerous.
-- **Fix**: Wrap each command in a helper `fn run(cmd) -> Result<()>` that
-  checks `status.success()` and returns `anyhow::bail!` with stderr otherwise.
-  (Moot if P0-1 Option A is taken — `network.rs` is deleted.)
-- **Resolution (2026-08-16, M1)**: `network.rs` was deleted entirely
-  (P0-1 Option A), so this class of bug no longer exists. The `ip`/`iptables`
-  runtime dependency is gone with it.
+### P1-2 `ip`/`iptables` 非零退出被静默当成功 ✅
+- **问题**：`network.rs` 全文 `.status().context(...)?` 只传播 spawn 命令
+  的 `io::Error`；`ip`/`iptables` 的非零退出被吞掉当成功。
+- **位置**：`src/network.rs:40,46,50,67,76,86,97,107,116,126,...`。
+- **影响**：在没装 `ip`/`iptables` 的宿主上，或任何规则插入失败时，
+  tinybox 报成功但网络是坏的。叠加 P0-1，失败静默且危险。
+- **修法**：每个命令包进 helper `fn run(cmd) -> Result<()>`，检查
+  `status.success()`，否则 `anyhow::bail!` 带 stderr。
+  （若 P0-1 取 Option A 则 moot——`network.rs` 被删。）
+- **解决（2026-08-16，M1）**：`network.rs` 整体删除（P0-1 Option A），
+  此类 bug 不复存在。`ip`/`iptables` 运行时依赖随之消失。
 
-### P1-3 daemon conflates failed and completed sandboxes
-- **Problem**: `create` sets `status="completed"` and `exit_code = result.ok()`
-  on both success and error; failures leave `exit_code=None` but still count as
-  "completed". `metrics` computes `completed = total - running`, so errored
-  sandboxes inflate the completed counter.
-- **Location**: `src/daemon.rs:105` (`exit_code = result.ok()`), `:143`.
-- **Impact**: `/metrics` and `GET /api/sandboxes` misreport health; an operator
-  cannot distinguish a crashed sandbox from a successful one.
-- **Fix**: Introduce `status` values `{running, completed, failed}`. On error
-  set `status="failed"`, capture `exit_code` and an `error` string. Expose
-  `tinybox_sandboxes_failed` as a separate Prometheus counter.
+### P1-3 daemon 把失败与完成的沙箱混为一谈
+- **问题**：`create` 在成功与出错时都设 `status="completed"` 且
+  `exit_code = result.ok()`；失败时 `exit_code=None` 但仍计为 "completed"。
+  `metrics` 算 `completed = total - running`，故出错沙箱抬高完成计数。
+- **位置**：`src/daemon.rs:105`（`exit_code = result.ok()`）、`:143`。
+- **影响**：`/metrics` 与 `GET /api/sandboxes` 误报健康；运维者无法区分
+  崩溃沙箱与成功沙箱。
+- **修法**：引入 `status` 值 `{running, completed, failed}`。出错时设
+  `status="failed"`，捕获 `exit_code` 与 `error` 串。暴露
+  `tinybox_sandboxes_failed` 为独立 Prometheus 计数器。
 
-### P1-4 daemon `CreateRequest` cannot set most sandbox options
-- **Problem**: The HTTP `CreateRequest` only accepts `rootfs`, `command`,
-  `memory_limit_mb`, `proxy`. The `SandboxConfig` it builds hard-codes cpus,
-  pids_limit, volumes, ports, network, hostname, env, image, oci, dangerous.
-- **Location**: `src/daemon.rs:59-95`.
-- **Impact**: The API cannot exercise the features the CLI exposes; Phase 8
-  acceptance only verifies the minimal `sleep 30` case.
-- **Fix**: Extend `CreateRequest` with optional `cpus`, `pids_limit`,
-  `volumes`, `ports`, `network`, `hostname`, `env`, `image`, `oci`. Reject
-  `dangerous=true` over the API (or require an explicit opt-in flag) to avoid
-  remote sandbox-disable footgun.
+### P1-4 daemon `CreateRequest` 不能设多数沙箱选项
+- **问题**：HTTP `CreateRequest` 只接受 `rootfs`、`command`、
+  `memory_limit_mb`、`proxy`。它构建的 `SandboxConfig` 把 cpus、pids_limit、
+  volumes、ports、network、hostname、env、image、oci、dangerous 全硬编码。
+- **位置**：`src/daemon.rs:59-95`。
+- **影响**：API 无法用 CLI 暴露的功能；Phase 8 验收只验了最简的
+  `sleep 30`。
+- **修法**：扩展 `CreateRequest` 加可选 `cpus`、`pids_limit`、`volumes`、
+  `ports`、`network`、`hostname`、`env`、`image`、`oci`。拒绝 API 传
+  `dangerous=true`（或要求显式 opt-in flag）以避免远程禁沙箱 footgun。
 
-### P1-5 `exec.rs` is a 23-line `nsenter` wrapper with gaps
-- **Problem**: `exec_in_container` shells out to `nsenter -t <pid> -m -u -n -p`,
-  missing `-i` (IPC), `-U` (user), `-C` (cgroup). No TTY allocation, no
-  `--cwd`/`--env`/`--user`, no validation that `<pid>` is a tinybox sandbox.
-- **Location**: `src/exec.rs:4-16`.
-- **Impact**: Exec'd processes don't share IPC/user/cgroup namespaces;
-  interactive shells have no controlling terminal; any host PID can be
-  targeted (privilege footgun if `exec` is ever wired into the daemon API).
-- **Fix**: Replace the `nsenter` shell-out with `nix::sched::setns` calls for
-  each of the target's namespaces (read `/proc/<pid>/ns/*` symlinks). Add
-  `-i/-U/-C` equivalents. Track sandbox PIDs in `daemon::AppState` and reject
-  PIDs not in that set. Add `--cwd`/`--env`/`--user` flags.
+### P1-5 `exec.rs` 是 23 行 `nsenter` 包装，有缺口
+- **问题**：`exec_in_container` shell 调 `nsenter -t <pid> -m -u -n -p`，
+  缺 `-i`（IPC）、`-U`（user）、`-C`（cgroup）。无 TTY 分配，无
+  `--cwd`/`--env`/`--user`，不校验 `<pid>` 是 tinybox 沙箱。
+- **位置**：`src/exec.rs:4-16`。
+- **影响**：exec 的进程不共享 IPC/user/cgroup namespace；交互 shell 无
+  控制终端；任意宿主 PID 都可被定向（若 `exec` 接入 daemon API 则是提权
+  footgun）。
+- **修法**：用 `nix::sched::setns` 替换 `nsenter` shell 调用，对目标各
+  namespace（读 `/proc/<pid>/ns/*` 符号链接）逐一 setns。加 `-i/-U/-C`
+  等价物。在 `daemon::AppState` 跟踪沙箱 PID，拒绝不在集合内的 PID。加
+  `--cwd`/`--env`/`--user` flags。
 
 ---
 
-## P2 — Shallow / Incomplete Features
+## P2 — 功能浅薄 / 不完整
 
-### P2-1 rootfs missing `/dev`, `/tmp`, `sysfs`; only `/proc` mounted
-- **Location**: `src/sandbox.rs:217` (`mount_proc`), `src/rootfs.rs`.
-- **Fix**: After pivot, mount `tmpfs` on `/dev`, create `/dev/pts`, `/dev/shm`,
-  `/dev/mqueue`; bind `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/tty` from
-  host; mount `tmpfs` on `/tmp` with a size cap; mount `sysfs` on `/sys` (read-only).
-  Honor OCI `root.readonly` by applying `MS_RDONLY` to the overlay.
+### P2-1 rootfs 缺 `/dev`、`/tmp`、`sysfs`；只 mount 了 `/proc`
+- **位置**：`src/sandbox.rs:217`（`mount_proc`）、`src/rootfs.rs`。
+- **修法**：pivot 后，在 `/dev` mount `tmpfs`，建 `/dev/pts`、`/dev/shm`、
+  `/dev/mqueue`；从宿主 bind `/dev/null`、`/dev/zero`、`/dev/urandom`、
+  `/dev/tty`；在 `/tmp` mount `tmpfs`（带容量上限）；在 `/sys` mount
+  `sysfs`（只读）。honor OCI `root.readonly` 给 overlay 加 `MS_RDONLY`。
 
-### P2-2 cgroup: no v2 validation, no controller enabling, swap hardcoded
-- **Location**: `src/cgroup.rs:23,35,38-51`.
-- **Fix**: Validate `/sys/fs/cgroup/cgroup.controllers` exists (v2). Write
-  `+memory +cpu +pids` to `cgroup.subtree_control` at the parent where needed.
-  Make `swap.max` configurable (default 0). Add `io.max` and `cpu.weight`.
+### P2-2 cgroup：无 v2 校验、无控制器启用、swap 硬编码
+- **位置**：`src/cgroup.rs:23,35,38-51`。
+- **修法**：校验 `/sys/fs/cgroup/cgroup.controllers` 存在（v2）。必要时
+  向父 `cgroup.subtree_control` 写 `+memory +cpu +pids`。让 `swap.max`
+  可配（默认 0）。加 `io.max` 与 `cpu.weight`。
 
-### P2-3 image storage: no content addressing, no layering, no metadata
-- **Location**: `src/image.rs`.
-- **Fix**: Store images as `<store>/<sha256>/` with alias symlinks
-  `<store>/aliases/<name> -> ../../<sha256>`. Support layered extraction
-  (whiteouts). Write a `metadata.json` per image (created, size, parent, labels).
+### P2-3 镜像存储：无内容寻址、无分层、无元数据
+- **位置**：`src/image.rs`。
+- **修法**：镜像存为 `<store>/<sha256>/`，别名符号链接
+  `<store>/aliases/<name> -> ../../<sha256>`。支持分层解包（whiteouts）。
+  每镜像写 `metadata.json`（created、size、parent、labels）。
 
-### P2-4 registry pull: in-memory blobs, no config, no digest verify, Docker Hub only
-- **Location**: `src/registry.rs:85-100,103,112`.
-- **Fix**: Stream blobs to a temp file (avoid OOM). Fetch the config blob and
-  surface `Cmd`/`Entrypoint`/`Env`/`WorkingDir` as default command when the
-  user omits `command`. Verify `docker-content-digest` against the manifest.
-  Support `registry-host[:port]/repo:tag` parsing (split on the first `/`).
-  Add HTTP timeouts and retries.
+### P2-4 registry 拉取：blob 全在内存、无 config、无 digest 校验、仅 Docker Hub
+- **位置**：`src/registry.rs:85-100,103,112`。
+- **修法**：blob 流式写临时文件（避免 OOM）。拉取 config blob，在用户省略
+  `command` 时把 `Cmd`/`Entrypoint`/`Env`/`WorkingDir` 作默认命令。校验
+  `docker-content-digest` 与 manifest 一致。支持
+  `registry-host[:port]/repo:tag` 解析（在第一个 `/` 处切）。加 HTTP 超时
+  与重试。
 
-### P2-5 daemon: no persistence, no auth, no streaming/log endpoints
-- **Location**: `src/daemon.rs`.
-- **Fix**: Persist `AppState` to `$TINYBOX_STATE_DIR/sandboxes.json`. Add
-  `GET /api/sandboxes/:id/logs` (stream stdout/stderr captured to a file).
-  Add bearer-token auth behind a `--auth-token` flag. Add `POST
-  /api/sandboxes/:id/exec` once P1-5 is fixed. Add graceful shutdown on SIGTERM.
-
----
-
-## P3 — Polish / Tech Debt
-
-### P3-1 `tracing` approved but unused; logging is `eprintln!`
-- **Fix**: Replace `eprintln!` with `tracing::{info,warn,error}` + a
-  `tracing_subscriber::fmt` init in `main`. Gate verbose output behind `-v`.
-
-### P3-2 `signal_to_int` returns 0 for unmapped signals
-- **Location**: `src/sandbox.rs:266-284`.
-- **Fix**: Default to `128 + signum` for any unmapped signal; reserve a
-  sentinel (`255`) for "killed by unknown signal".
-
-### P3-3 `parse_port_spec` only supports `host:container` TCP
-- **Location**: `src/sandbox.rs:288`.
-- **Fix**: Support `ip:host:container`, `port-range`, and `udp` suffix
-  (`8080:80/udp`). Moot under P0-1 Option A.
-
-### P3-4 `mount_proc` swallows `create_dir_all` errors via `.ok()`
-- **Location**: `src/sandbox.rs:217`.
-- **Fix**: Propagate the error; only `.ok()` the mount if `/proc` is already
-  mounted.
-
-### P3-5 double cgroup cleanup (`Drop` + manual `drop(cg)`)
-- **Location**: `src/cgroup.rs:73-80`, `src/sandbox.rs:117`.
-- **Fix**: Remove the manual `drop`; rely on `Drop`.
-
-### P3-6 test hygiene: shared `TINYBOX_IMAGE_DIR` env mutated across tests
-- **Location**: `src/image.rs` tests.
-- **Fix**: Use `tempfile::TempDir` per test, set the env in-process only.
+### P2-5 daemon：无持久化、无鉴权、无流式/日志端点
+- **位置**：`src/daemon.rs`。
+- **修法**：把 `AppState` 持久化到 `$TINYBOX_STATE_DIR/sandboxes.json`。加
+  `GET /api/sandboxes/:id/logs`（流式 stdout/stderr，捕获到文件）。加
+  bearer-token 鉴权（`--auth-token` flag）。P1-5 修好后加 `POST
+  /api/sandboxes/:id/exec`。加 SIGTERM 优雅关闭。
 
 ---
 
-## Remediation Roadmap
+## P3 — 打磨 / 技术债
 
-Ordered so that each milestone leaves the tree in a defensible state. Target
-commits follow the existing `phase N:` / `fix:` convention; tag at each
-milestone.
+### P3-1 `tracing` 已批准但未用；日志是 `eprintln!`
+- **修法**：用 `tracing::{info,warn,error}` 替换 `eprintln!`，在 `main`
+  加 `tracing_subscriber::fmt` 初始化。verbose 输出由 `-v` 门控。
 
-### Milestone M0 — "Honest baseline" (no behavior change) ✅
-1. Add this `PLAN.md`. ✅ (commit `0531141`)
-2. Correct README badges/status and AGENTS decision log to reflect the real
-   state. ✅ (commit `0531141`)
-3. Add a `WARNING: not a security boundary` notice to README and `--help`. ✅
+### P3-2 `signal_to_int` 对未映射信号返回 0
+- **位置**：`src/sandbox.rs:266-284`。
+- **修法**：对任何未映射信号默认 `128 + signum`；留哨兵值（`255`）表
+  "被未知信号杀死"。
 
-### Milestone M1 — Close P0 isolation holes ✅ (2026-08-16)
-1. ✅ P0-1 Option A: `src/network.rs` deleted; `--network`/`-p` flags removed;
-   `ip`/`iptables` runtime dependency gone.
-2. ✅ P0-2: `child_main` always unshares `CLONE_NEWNET`; `--proxy` =
-   loopback-only + env vars.
-3. ✅ P0-3: `clone` restricted via `MaskedEq(0x7E020000)` (forbids `CLONE_NEW*`);
-   nine escape/interference syscalls removed; `DANGEROUS_CAPS` 8 → 14.
-4. ✅ P0-4: `drop_capabilities` clears the bounding set via `PR_CAPBSET_DROP`.
-5. ✅ Regression tests: `test_phase5.sh` Tests 5–7 (normal fork ok,
-   `clone(CLONE_NEWUSER)` → SIGSYS, `CapBnd` cleared); `test_phase7.sh`
-   Test 3 (`--proxy` no default route); seccomp unit tests for clone rule +
-   excluded syscalls. All acceptance gates green.
+### P3-3 `parse_port_spec` 只支持 `host:container` TCP
+- **位置**：`src/sandbox.rs:288`。
+- **修法**：支持 `ip:host:container`、`port-range`、`udp` 后缀
+  （`8080:80/udp`）。P0-1 Option A 下 moot。
 
-### Milestone M2 — Make claimed features actually work
-1. P1-1: honor OCI `linux.namespaces`, `root.readonly`, `process.cwd`,
-   `process.user`.
-2. P1-3: daemon status `{running,completed,failed}` + failed metrics counter.
-3. P1-4: extend `CreateRequest`; reject remote `dangerous`.
-4. P1-5: `exec` via `setns`, namespace-complete, PID-validated, with TTY.
-5. **P2-1 pulled forward** (was M3): full `/dev`, `/tmp`, `/sys` setup. R0's
-   acceptance requires a real `pip install` to run inside a sandbox, which
-   needs `/dev/null`, writable `/tmp`, etc. — so P2-1 is a prerequisite for
-   the research track's first acceptance test, not a polish item.
+### P3-4 `mount_proc` 用 `.ok()` 吞掉 `create_dir_all` 错误
+- **位置**：`src/sandbox.rs:217`。
+- **修法**：传播错误；仅当 `/proc` 已 mount 时才对 mount `.ok()`。
 
-> **Research-track dependency (see [VISION.md](VISION.md))**: R0 may run
-> in parallel with M2 (instrumentation is non-invasive). R1 starts **only
-> after M2 closes** — there is no point building a dynamic policy engine on
-> an OCI parser that silently ignores `linux.namespaces`.
+### P3-5 双重 cgroup 清理（`Drop` + 手动 `drop(cg)`）
+- **位置**：`src/cgroup.rs:73-80`、`src/sandbox.rs:117`。
+- **修法**：移除手动 `drop`；靠 `Drop`。
 
-### Milestone M3 — Depth where it matters
-1. P2-2: cgroup v2 validation + controller enabling.
-2. P2-3/P2-4: content-addressed images + registry config blob fetch + streaming.
-3. P2-5: daemon persistence + logs + auth + exec endpoint.
+### P3-6 测试卫生：共享 `TINYBOX_IMAGE_DIR` env 跨测试被改
+- **位置**：`src/image.rs` 测试。
+- **修法**：每测用 `tempfile::TempDir`，env 只在进程内设。
 
-### Milestone M4 — Polish
-1. P3-1 through P3-6.
+---
 
-### Stretch (explicitly out of scope for v1.0 remediation track)
-- rootless operation via `CLONE_NEWUSER` + uid mapping (research-track R5)
+## 修复路线图
+
+排序使每个里程碑后代码树处于可辩护状态。提交沿用现有 `phase N:` / `fix:`
+约定；每个里程碑打 tag。
+
+### 里程碑 M0——"诚实基线"（无行为变更）✅
+1. 加本 `PLAN.md`。✅（提交 `0531141`）
+2. 修正 README 徽章/状态与 AGENTS 决策日志反映真实状态。✅（提交
+   `0531141`）
+3. 在 README 与 `--help` 加 `WARNING: not a security barrier` 告示。✅
+
+### 里程碑 M1——关闭 P0 隔离漏洞 ✅（2026-08-16）
+1. ✅ P0-1 Option A：`src/network.rs` 删除；`--network`/`-p` flags 移除；
+   `ip`/`iptables` 运行时依赖消失。
+2. ✅ P0-2：`child_main` 始终 unshare `CLONE_NEWNET`；`--proxy` =
+   loopback-only + env vars。
+3. ✅ P0-3：`clone` 经 `MaskedEq(0x7E020000)` 限制（禁 `CLONE_NEW*`）；
+   九个逃逸/干扰 syscall 移除；`DANGEROUS_CAPS` 8 → 14。
+4. ✅ P0-4：`drop_capabilities` 经 `PR_CAPBSET_DROP` 清 bounding set。
+5. ✅ 回归测试：`test_phase5.sh` Tests 5–7（正常 fork ok、
+   `clone(CLONE_NEWUSER)` → SIGSYS、`CapBnd` 已清）；`test_phase7.sh`
+   Test 3（`--proxy` 无默认路由）；seccomp clone 规则 + 排除 syscall 的
+   单测。所有验收门绿。
+
+### 里程碑 M2——让声称的功能真正能用
+1. P1-1：honor OCI `linux.namespaces`、`root.readonly`、`process.cwd`、
+   `process.user`。
+2. P1-3：daemon 状态 `{running,completed,failed}` + 失败计数器。
+3. P1-4：扩展 `CreateRequest`；拒绝远程 `dangerous`。
+4. P1-5：`exec` 走 `setns`，namespace 完整、PID 校验、带 TTY。
+5. **P2-1 已提前**（原在 M3）：完整 `/dev`、`/tmp`、`/sys` 设置。R0 的
+   验收需要真跑 `pip install`，而它需要 `/dev/null`、可写 `/tmp` 等——故
+   P2-1 是研究轨首个验收的前置，不是打磨项。
+
+> **研究轨依赖（见 [VISION.md](VISION.md)）**：R0 可与 M2 并行（插桩
+> 非侵入）。R1 只在 **M2 关闭后**开始——在一个静默忽略
+> `linux.namespaces` 的 OCI 解析器上建动态策略引擎没意义。
+
+### 里程碑 M3——纵深
+1. P2-2：cgroup v2 校验 + 控制器启用。
+2. P2-3/P2-4：内容寻址镜像 + registry config blob 拉取 + 流式。
+3. P2-5：daemon 持久化 + 日志 + 鉴权 + exec 端点。
+
+### 里程碑 M4——打磨
+1. P3-1 至 P3-6。
+
+### 延伸（修复轨 v1.0 明确不做）
+- rootless 运行（`CLONE_NEWUSER` + uid 映射，研究轨 R5）
 - cgroup namespace
-- UDP port mapping / hairpin NAT (only if bridge is retained — bridge was
-  removed in M1, so this is dormant)
-- multi-host anything
+- UDP 端口映射 / hairpin NAT（仅在保留 bridge 时——bridge 已在 M1 删，
+  故此项休眠）
+- 多机任何东西
 
-> The research track (R0–R3 + stretch R4–R6) lives in
-> [VISION.md](VISION.md) and is not tracked here.
-
----
-
-## Verification gates (must pass before tagging a milestone)
-
-- `cargo test && cargo clippy -- -D warnings` (existing gate).
-- New: `scripts/test_phase7.sh` asserts host route table unchanged after a
-  `--proxy` run and after a (retained) `--network` run.
-- New: `scripts/test_phase5.sh` asserts `clone(CLONE_NEWUSER)` returns `EPERM`
-  inside a sandbox.
-- New: `scripts/test_phase6.sh` asserts an OCI config requesting only
-  `{pid,mount}` namespaces actually restricts to those.
-- New: `scripts/test_phase8.sh` asserts `/metrics` reports
-  `tinybox_sandboxes_failed` after a deliberately-crashing sandbox.
+> 研究轨（R0–R3 + 延伸 R4–R6）在 [VISION.md](VISION.md)，不在此追踪。
 
 ---
 
-## Status legend for README/AGENTS
+## 验收门（打 tag 前必须过）
 
-When updating per-phase status, use:
-- ✅ **works** — meets acceptance, no open P0/P1 item.
-- ⚠️ **partial** — runs but has an open P1/P2 item (see PLAN.md).
-- ❌ **broken** — has an open P0 item or fails acceptance.
+- `cargo test && cargo clippy -- -D warnings`（既有门）。
+- 新：`scripts/test_phase7.sh` 断言 `--proxy` 跑后宿主路由表不变。
+- 新：`scripts/test_phase5.sh` 断言沙箱内 `clone(CLONE_NEWUSER)` 返回
+  `EPERM`（实为 SIGSYS 159）。
+- 新：`scripts/test_phase6.sh` 断言一个只请求 `{pid,mount}` namespace 的
+  OCI config 实际限制到那些。
+- 新：`scripts/test_phase8.sh` 断言 `/metrics` 在故意崩掉的沙箱后报
+  `tinybox_sandboxes_failed`。
 
-Current per-phase status (post-M1, 2026-08-16):
+---
+
+## 状态图例（供 README/AGENTS 用）
+
+更新各 phase 状态时，用：
+- ✅ **works**——过验收、无开放 P0/P1 项。
+- ⚠️ **partial**——能跑但有开放 P1/P2 项（见 PLAN.md）。
+- ❌ **broken**——有开放 P0 项或不过验收。
+
+当前各 phase 状态（M1 后，2026-08-16）：
 
 | Phase | Feature | Status | Open items |
 |-------|---------|--------|------------|
 | 1 | skeleton + CLI + exec | ✅ | — |
-| 2 | namespaces (pid/mount/uts/net) | ✅ | — (NEWNET now always unshared) |
-| 3 | overlayfs + pivot_root | ⚠️ | P2-1 (no /dev, /tmp, /sys) |
-| 4 | cgroup limits | ⚠️ | P2-2 (no v2 validation, swap hardcoded) |
-| 5 | seccomp + caps | ✅ | — (P0-3, P0-4 fixed in M1) |
-| 6 | OCI bundle | ❌ | P1-1 (namespaces ignored) |
-| 7 | network (proxy-only) | ✅ | — (P0-1, P0-2 fixed in M1; bridge removed) |
-| 8 | daemon API | ⚠️ | P1-3, P1-4, P2-5 |
+| 2 | namespaces (pid/mount/uts/net) | ✅ | —（NEWNET 现始终 unshare） |
+| 3 | overlayfs + pivot_root | ⚠️ | P2-1（无 /dev、/tmp、/sys） |
+| 4 | cgroup limits | ⚠️ | P2-2（无 v2 校验，swap 硬编码） |
+| 5 | seccomp + caps | ✅ | —（P0-3、P0-4 已在 M1 修） |
+| 6 | OCI bundle | ❌ | P1-1（namespaces 被忽略） |
+| 7 | network（proxy-only） | ✅ | —（P0-1、P0-2 已在 M1 修；bridge 移除） |
+| 8 | daemon API | ⚠️ | P1-3、P1-4、P2-5 |
 | 9 | local images | ⚠️ | P2-3 |
 | 10 | registry pull | ⚠️ | P2-4 |
-| 11 | ~~network bridge~~ | 🗑 removed | removed in M1 (Option A); was P0-1 |
+| 11 | ~~network bridge~~ | 🗑 移除 | M1 移除（Option A）；原 P0-1 |
 | 12 | volumes | ✅ | — |
 | 13 | exec | ⚠️ | P1-5 |
