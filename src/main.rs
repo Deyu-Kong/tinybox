@@ -65,6 +65,9 @@ enum Commands {
         #[arg(long)]
         image: Option<String>,
 
+        #[arg(long = "read-only")]
+        read_only: bool,
+
         #[arg(short = 'v', long = "volume")]
         volumes: Vec<String>,
 
@@ -151,6 +154,7 @@ fn main() -> Result<()> {
             proxy,
             oci,
             image,
+            read_only,
             volumes,
         } => {
             let (command, root, oci_env) = if let Some(bundle_path) = oci {
@@ -178,6 +182,7 @@ fn main() -> Result<()> {
                 command,
                 hostname,
                 rootfs: root.map(std::path::PathBuf::from),
+                root_readonly: read_only,
                 env: oci_env,
                 proxy,
                 volumes,

@@ -80,8 +80,9 @@ async fn create(
         let config = SandboxConfig {
             command: req.command,
             hostname: None,
-            rootfs: Some(PathBuf::from(req.rootfs)),
-            env: Vec::new(),
+                rootfs: Some(PathBuf::from(req.rootfs)),
+                root_readonly: false,
+                env: Vec::new(),
             proxy: req.proxy,
             volumes: Vec::new(),
             memory: req.memory_limit_mb.map(|v| v * 1024 * 1024),

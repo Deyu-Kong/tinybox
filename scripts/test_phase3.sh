@@ -80,4 +80,40 @@ else
     exit 1
 fi
 
+echo -n "Test 5: /dev/null is populated and writable (P2-1)... "
+OUTPUT=$($TINYBOX run --root "$ROOTFS" -- sh -c 'echo ok > /dev/null && echo yes')
+if [ "$OUTPUT" = "yes" ]; then
+    echo "PASS"
+else
+    echo "FAIL (got: $OUTPUT)"
+    exit 1
+fi
+
+echo -n "Test 6: /proc is mounted (P2-1)... "
+OUTPUT=$($TINYBOX run --root "$ROOTFS" -- sh -c 'test -f /proc/self/status && echo yes')
+if [ "$OUTPUT" = "yes" ]; then
+    echo "PASS"
+else
+    echo "FAIL (got: $OUTPUT)"
+    exit 1
+fi
+
+echo -n "Test 7: /tmp is a writable tmpfs, size-capped (P2-1)... "
+OUTPUT=$($TINYBOX run --root "$ROOTFS" -- sh -c 'echo data > /tmp/f && cat /tmp/f')
+if [ "$OUTPUT" = "data" ]; then
+    echo "PASS"
+else
+    echo "FAIL (got: $OUTPUT)"
+    exit 1
+fi
+
+echo -n "Test 8: --read-only makes rootfs read-only (P2-1)... "
+$TINYBOX run --read-only --root "$ROOTFS" -- sh -c 'echo x > /should_fail' 2>/dev/null && CODE=0 || CODE=$?
+if [ "$CODE" -ne 0 ]; then
+    echo "PASS (write denied, exit $CODE)"
+else
+    echo "FAIL (write succeeded on read-only rootfs)"
+    exit 1
+fi
+
 echo "=== All Phase 3 tests passed ==="

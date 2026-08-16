@@ -16,6 +16,7 @@ pub struct SandboxConfig {
     pub command: Vec<String>,
     pub hostname: Option<String>,
     pub rootfs: Option<PathBuf>,
+    pub root_readonly: bool,
     pub env: Vec<String>,
     pub proxy: Option<String>,
     pub volumes: Vec<String>,
@@ -137,8 +138,11 @@ fn child_main(config: &SandboxConfig, program: &CString, args: &[CString]) -> Re
     }
 
     let rootfs_config = if let Some(ref rootfs_path) = config.rootfs {
-        let rootfs = RootfsConfig::new(rootfs_path.clone())?;
+        let rootfs = RootfsConfig::new(rootfs_path.clone(), config.root_readonly)?;
         rootfs.setup()?;
+        // P2-1: mount /dev /tmp /sys /proc under merged BEFORE pivot, while the
+        // host's /dev device nodes are still reachable as bind sources.
+        rootfs.setup_special_fs()?;
         Some(rootfs)
     } else {
         None
@@ -156,9 +160,14 @@ fn child_main(config: &SandboxConfig, program: &CString, args: &[CString]) -> Re
         ForkResult::Child => {
             if let Some(ref rootfs) = rootfs_config {
                 rootfs.pivot()?;
+                drop(rootfs_config);
+            } else {
+                // No isolated rootfs: mount /proc in-place in the new mount ns.
+                // (No /dev/tmp/sys hardening — the no-rootfs path shares the
+                // host rootfs and is inherently less isolated; the hardened
+                // path is rootfs+pivot above.)
+                mount_proc()?;
             }
-            drop(rootfs_config);
-            mount_proc()?;
             mount_volumes(&config.volumes)?;
             drop_capabilities(config.dangerous)?;
             apply_seccomp_filter(config.dangerous)?;
@@ -293,6 +302,7 @@ mod tests {
             command: vec![],
             hostname: None,
             rootfs: None,
+            root_readonly: false,
             env: Vec::new(),
             proxy: None,
             volumes: Vec::new(),
