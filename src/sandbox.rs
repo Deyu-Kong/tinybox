@@ -9,7 +9,6 @@ use std::os::unix::io::{BorrowedFd, IntoRawFd};
 use std::path::PathBuf;
 
 use crate::cgroup::{Cgroup, CgroupConfig};
-use crate::network::{self, NetworkConfig};
 use crate::rootfs::RootfsConfig;
 use crate::seccomp::{apply_seccomp_filter, drop_capabilities};
 
@@ -19,8 +18,6 @@ pub struct SandboxConfig {
     pub rootfs: Option<PathBuf>,
     pub env: Vec<String>,
     pub proxy: Option<String>,
-    pub network: Option<String>,
-    pub ports: Vec<String>,
     pub volumes: Vec<String>,
     pub memory: Option<u64>,
     pub cpus: Option<f64>,
@@ -72,15 +69,6 @@ where
         None
     };
 
-    let net_config = if config.network.is_some() {
-        network::setup_bridge()?;
-        let net_cfg = NetworkConfig::new(std::process::id());
-        network::create_veth_pair(&net_cfg)?;
-        Some(net_cfg)
-    } else {
-        None
-    };
-
     let (read_fd, write_fd) = pipe().context("failed to create pipe")?;
     let read_fd = read_fd.into_raw_fd();
     let write_fd = write_fd.into_raw_fd();
@@ -94,15 +82,6 @@ where
                 cg.add_process(child.as_raw() as u32)?;
             }
 
-            if let Some(ref net_cfg) = net_config {
-                network::move_veth_to_ns(net_cfg, child.as_raw() as u32)?;
-                for port_spec in &config.ports {
-                    if let Some((host_port, container_port)) = parse_port_spec(port_spec) {
-                        network::setup_port_mapping(host_port, &net_cfg.container_ip, container_port)?;
-                    }
-                }
-            }
-
             on_pid(child);
 
             // SAFETY: write_fd is valid (just created by pipe, not yet closed).
@@ -111,9 +90,6 @@ where
             close(write_fd).ok();
 
             let status = waitpid(child, None)?;
-            if let Some(ref net_cfg) = net_config {
-                network::cleanup_veth(net_cfg)?;
-            }
             drop(cgroup);
             Ok(exit_code_from_status(status))
         }
@@ -134,20 +110,18 @@ where
 }
 
 fn child_main(config: &SandboxConfig, program: &CString, args: &[CString]) -> Result<()> {
+    // SAFETY: always unshare CLONE_NEWNET so the sandbox gets a loopback-only
+    // netns. `--proxy` only adds HTTP_PROXY env vars on top of this isolation;
+    // it no longer relies on env vars alone (P0-2). The bridge/veth path was
+    // removed (P0-1 Option A) — it contradicted the documented proxy-only
+    // design and leaked configuration onto the host netns.
     let mut flags = CloneFlags::empty();
     flags.insert(CloneFlags::CLONE_NEWPID);
     flags.insert(CloneFlags::CLONE_NEWNS);
     flags.insert(CloneFlags::CLONE_NEWUTS);
-    if config.proxy.is_none() && config.network.is_none() {
-        flags.insert(CloneFlags::CLONE_NEWNET);
-    }
+    flags.insert(CloneFlags::CLONE_NEWNET);
 
     unshare(flags)?;
-
-    if config.network.is_some() {
-        let net_cfg = NetworkConfig::new(std::process::id());
-        network::configure_container_network(&net_cfg)?;
-    }
 
     mount(
         None::<&str>,
@@ -285,17 +259,6 @@ fn signal_to_int(signal: Signal) -> i32 {
     }
 }
 
-fn parse_port_spec(spec: &str) -> Option<(u16, u16)> {
-    let parts: Vec<&str> = spec.split(':').collect();
-    if parts.len() == 2 {
-        let host_port = parts[0].parse().ok()?;
-        let container_port = parts[1].parse().ok()?;
-        Some((host_port, container_port))
-    } else {
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,8 +295,6 @@ mod tests {
             rootfs: None,
             env: Vec::new(),
             proxy: None,
-            network: None,
-            ports: Vec::new(),
             volumes: Vec::new(),
             memory: None,
             cpus: None,

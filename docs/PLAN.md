@@ -17,25 +17,36 @@ Conventions:
 
 ## Summary
 
-| Severity | Count |
-|----------|-------|
-| P0 (isolation/security) | 4 |
-| P1 (correctness/contradiction) | 5 |
-| P2 (shallow feature) | 5 |
-| P3 (polish) | 6 |
+| Severity | Count | Status |
+|----------|-------|--------|
+| P0 (isolation/security) | 4 | ✅ all resolved (M1 complete, 2026-08-16) |
+| P1 (correctness/contradiction) | 5 | open |
+| P2 (shallow feature) | 5 | open |
+| P3 (polish) | 6 | open (one incidental fix landed) |
 
-Real, defensible capability after fixes lands at roughly "a minimal runc for
-single-host Agent workloads with optional bridge networking." Today the
-process-isolation skeleton (namespaces + overlayfs + cgroups + seccomp) runs,
-but the network stack leaks to the host and the seccomp allow-list has known
-escape primitives, so **tinybox must not be considered a security boundary in
-its current state.**
+**P0 isolation holes are closed.** The four P0 items were resolved in
+Milestone M1 (2026-08-16): the bridge/veth/NAT path was removed entirely
+(Option A — `src/network.rs` deleted, `--network`/`-p` flags removed), the
+sandbox now **always** unshares `CLONE_NEWNET` so `--proxy` is real
+isolation (loopback-only + env vars), the seccomp allow-list had its escape
+primitives removed and `clone` restricted to forbid `CLONE_NEW*` flags, and
+the capability bounding set is now cleared via `PR_CAPBSET_DROP`.
+
+The process-isolation skeleton (namespaces + overlayfs + cgroups + seccomp +
+caps) is now a defensible barrier for the `tinybox run` path. Remaining open
+items (P1 OCI field honoring, P2 rootfs/device hardening, etc.) are
+correctness/depth issues, not escape holes. tinybox is still **rootful** and
+lacks `/dev`/`/tmp`/`/sys` hardening, so it is not yet a production-grade
+boundary — but it no longer leaks to the host.
 
 ---
 
-## P0 — Isolation / Security
+## P0 — Isolation / Security ✅ RESOLVED (M1)
 
-### P0-1 `--network bridge` configures the host network instead of the sandbox
+> All four P0 items below were fixed on 2026-08-16 (commit after `0531141`).
+> The text is retained as the historical record of the defect + fix.
+
+### P0-1 `--network bridge` configures the host network instead of the sandbox ✅
 - **Problem**: When `--network` is set, `child_main` does **not** add
   `CLONE_NEWNET` to the `unshare` flags. The parent then calls
   `network::move_veth_to_ns(child_pid)` while the child is still blocked on the
@@ -62,8 +73,14 @@ its current state.**
 - **Recommendation**: Option A for v0.x (matches the documented "proxy-based,
   no bridge" decision and the "no TUN/TAP, no bridge" constraint). Revisit
   bridge as a v1.0 opt-in once seccomp + cap story is solid.
+- **Resolution (2026-08-16, Option A taken)**: `src/network.rs` deleted
+  entirely; `--network` and `-p`/`--publish` flags removed from `main.rs`;
+  `SandboxConfig.network`/`ports` fields removed; the bridge/veth/port-mapping
+  blocks in `sandbox.rs` removed; `scripts/test_phase11.sh` deleted (it tested
+  the removed bridge). The `ip`/`iptables` binary dependency is gone. P0-2
+  (below) covers the resulting `--proxy` semantics.
 
-### P0-2 `--proxy` provides no isolation
+### P0-2 `--proxy` provides no isolation ✅
 - **Problem**: `--proxy <URL>` only pushes `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`
   env vars. No `CLONE_NEWNET` is created when `--proxy` is set, so the sandbox
   shares the host netns; any binary that ignores the proxy env bypasses it.
@@ -76,8 +93,12 @@ its current state.**
   empty (only `lo`) and set the env vars; for `--network bridge`, run the veth
   setup inside the child. Make the Phase 7 acceptance test assert that
   `ping 8.8.8.8` fails **with** `--proxy` set (only loopback reachable).
+- **Resolution (2026-08-16)**: `child_main` now always inserts `CLONE_NEWNET`
+  (the `proxy.is_none() && network.is_none()` gate was removed). `--proxy`
+  therefore yields a loopback-only netns + env vars. Regression:
+  `scripts/test_phase7.sh` Test 3 asserts `--proxy` mode has no default route.
 
-### P0-3 seccomp allow-list contains escape primitives
+### P0-3 seccomp allow-list contains escape primitives ✅
 - **Problem**: The allow-list permits syscalls that are well-known container
   escape / host-interference primitives:
   - `clone` (no argument filtering) — a sandboxed process can
@@ -102,8 +123,19 @@ its current state.**
      `CAP_AUDIT_*`, `CAP_SETFCAP` to the dropped set.
   4. Add a `// SAFETY:` note documenting the residual risk and the
      `--dangerous` escape hatch.
+- **Resolution (2026-08-16)**: all four sub-fixes landed in `src/seccomp.rs`.
+  `clone` now carries a `SeccompCmpOp::MaskedEq(0x7E020000)` rule on arg0 so
+  any `CLONE_NEW*` bit → SIGSYS; `clone3` remains absent from the allow-list.
+  The nine escape/interference syscalls were removed. `DANGEROUS_CAPS` grew
+  from 8 → 14 (added `CAP_DAC_READ_SEARCH`, `CAP_NET_RAW`, `CAP_AUDIT_WRITE`,
+  `CAP_AUDIT_CONTROL`, `CAP_SETFCAP`, `CAP_SYSLOG`). Rule-building was
+  extracted into `build_rules()` for unit testing. Regressions:
+  `scripts/test_phase5.sh` Test 6 (`clone(CLONE_NEWUSER)` → SIGSYS 159) and
+  two new seccomp unit tests (`test_clone_rule_blocks_namespace_flags`,
+  `test_escape_syscalls_excluded`). Normal fork (`clone(SIGCHLD)`) still
+  passes (Test 5).
 
-### P0-4 capability bounding set is never cleared
+### P0-4 capability bounding set is never cleared ✅
 - **Problem**: `drop_capabilities` clears effective/permitted/inheritable/
   ambient sets but never calls `prctl(PR_CAPBSET_DROP, ...)`. A setuid binary
   exec'd inside the sandbox re-acquires dropped caps from the bounding set on
@@ -115,6 +147,11 @@ its current state.**
   cap list and call `prctl(PR_CAPBSET_DROP, cap)` for each. Add a unit test
   that reads `/proc/self/status` `CapBnd` and asserts the dangerous caps are
   absent.
+- **Resolution (2026-08-16)**: `drop_capabilities` now loops `DANGEROUS_CAPS`
+  and calls `libc::prctl(PR_CAPBSET_DROP, cap, ...)` for each. Regressions:
+  `scripts/test_phase5.sh` Test 7 asserts `CapBnd` has `CAP_SYS_ADMIN` (bit
+  21) cleared; `tests/phase5.rs::test_capabilities_dropped` extended to also
+  assert `CapBnd` for `CAP_SYS_ADMIN` + `CAP_NET_ADMIN`.
 
 ---
 
@@ -265,22 +302,24 @@ Ordered so that each milestone leaves the tree in a defensible state. Target
 commits follow the existing `phase N:` / `fix:` convention; tag at each
 milestone.
 
-### Milestone M0 — "Honest baseline" (no behavior change)
-1. Add this `PLAN.md`. ✅ (this commit)
+### Milestone M0 — "Honest baseline" (no behavior change) ✅
+1. Add this `PLAN.md`. ✅ (commit `0531141`)
 2. Correct README badges/status and AGENTS decision log to reflect the real
-   state. ✅ (this commit)
-3. Add a `WARNING: not a security boundary` notice to README and `--help`.
+   state. ✅ (commit `0531141`)
+3. Add a `WARNING: not a security boundary` notice to README and `--help`. ✅
 
-### Milestone M1 — Close P0 isolation holes
-1. P0-1 Option A: remove `network.rs` bridge/NAT; revert `--network` to a
-   no-op/removal; drop `ip`/`iptables` from runtime deps. (Or Option B if a
-   bridge is genuinely required — record the decision in AGENTS.md first.)
-2. P0-2: always `unshare(CLONE_NEWNET)`; `--proxy` = loopback-only + env.
-3. P0-3: tighten seccomp allow-list (argument-restrict `clone`; remove escape
-   syscalls; drop more caps).
-4. P0-4: clear the bounding set.
-5. Add regression tests asserting host netns/route table is unchanged and that
-   `clone(CLONE_NEWUSER)` is blocked.
+### Milestone M1 — Close P0 isolation holes ✅ (2026-08-16)
+1. ✅ P0-1 Option A: `src/network.rs` deleted; `--network`/`-p` flags removed;
+   `ip`/`iptables` runtime dependency gone.
+2. ✅ P0-2: `child_main` always unshares `CLONE_NEWNET`; `--proxy` =
+   loopback-only + env vars.
+3. ✅ P0-3: `clone` restricted via `MaskedEq(0x7E020000)` (forbids `CLONE_NEW*`);
+   nine escape/interference syscalls removed; `DANGEROUS_CAPS` 8 → 14.
+4. ✅ P0-4: `drop_capabilities` clears the bounding set via `PR_CAPBSET_DROP`.
+5. ✅ Regression tests: `test_phase5.sh` Tests 5–7 (normal fork ok,
+   `clone(CLONE_NEWUSER)` → SIGSYS, `CapBnd` cleared); `test_phase7.sh`
+   Test 3 (`--proxy` no default route); seccomp unit tests for clone rule +
+   excluded syscalls. All acceptance gates green.
 
 ### Milestone M2 — Make claimed features actually work
 1. P1-1: honor OCI `linux.namespaces`, `root.readonly`, `process.cwd`,
@@ -328,20 +367,20 @@ When updating per-phase status, use:
 - ⚠️ **partial** — runs but has an open P1/P2 item (see PLAN.md).
 - ❌ **broken** — has an open P0 item or fails acceptance.
 
-Current per-phase status (post-review):
+Current per-phase status (post-M1, 2026-08-16):
 
 | Phase | Feature | Status | Open items |
 |-------|---------|--------|------------|
 | 1 | skeleton + CLI + exec | ✅ | — |
-| 2 | namespaces (pid/mount/uts) | ✅ | — |
+| 2 | namespaces (pid/mount/uts/net) | ✅ | — (NEWNET now always unshared) |
 | 3 | overlayfs + pivot_root | ⚠️ | P2-1 (no /dev, /tmp, /sys) |
 | 4 | cgroup limits | ⚠️ | P2-2 (no v2 validation, swap hardcoded) |
-| 5 | seccomp + caps | ❌ | P0-3, P0-4 (escape primitives, no bset clear) |
+| 5 | seccomp + caps | ✅ | — (P0-3, P0-4 fixed in M1) |
 | 6 | OCI bundle | ❌ | P1-1 (namespaces ignored) |
-| 7 | network | ❌ | P0-1, P0-2 (host netns leak; proxy not isolation) |
+| 7 | network (proxy-only) | ✅ | — (P0-1, P0-2 fixed in M1; bridge removed) |
 | 8 | daemon API | ⚠️ | P1-3, P1-4, P2-5 |
 | 9 | local images | ⚠️ | P2-3 |
 | 10 | registry pull | ⚠️ | P2-4 |
-| 11 | network bridge | ❌ | P0-1 (contradicts design + leaks) |
+| 11 | ~~network bridge~~ | 🗑 removed | removed in M1 (Option A); was P0-1 |
 | 12 | volumes | ✅ | — |
 | 13 | exec | ⚠️ | P1-5 |

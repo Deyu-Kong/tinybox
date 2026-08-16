@@ -112,7 +112,7 @@ mod tests {
             .prefix(&format!("tinybox-payload-{label}-"))
             .tempdir()
             .unwrap()
-            .into_path();
+            .keep();
         unique
     }
 

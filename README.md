@@ -5,13 +5,14 @@ A minimal, secure sandbox runtime for running AI Agents in isolated environments
 ![Phase Progress](https://img.shields.io/badge/phase-13%2F8-yellow)
 ![Lines of Code](https://img.shields.io/badge/LOC-2004-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Status](https://img.shields.io/badge/status-NOT%20a%20security%20boundary-red)
+![Status](https://img.shields.io/badge/status-P0%20fixed%2C%20hardening%20incomplete-yellow)
 
-> ⚠️ **WARNING — not a security boundary (yet).** A line-level review on
-> 2026-08-16 found that the network stack leaks to the host and the seccomp
-> allow-list contains known escape primitives. Do **not** use tinybox to
-> confine untrusted workloads until the P0 items in [PLAN.md](docs/PLAN.md) are
-> resolved. See docs/PLAN.md for the full issue list and remediation roadmap.
+> ⚠️ **P0 isolation holes are fixed (M1, 2026-08-16), but hardening is
+> incomplete.** tinybox now properly isolates via namespaces + cgroups +
+> seccomp + caps (the `tinybox run` path is a defensible barrier), but it is
+> still rootful, lacks `/dev`/`/tmp`/`/sys` hardening, and OCI field-honoring
+> is incomplete. See [docs/PLAN.md](docs/PLAN.md) for the full audit and the
+> remaining P1/P2 items.
 
 ## Motivation
 
@@ -27,25 +28,27 @@ The project covers all six directions of the Agent Infra JD:
 
 ## Current Status
 
-**13 phases implemented (2004 lines of Rust), but 4 P0 isolation holes are open.**
-See [PLAN.md](docs/PLAN.md) for the authoritative, line-referenced audit and
-remediation roadmap. Per-phase status uses ✅ works / ⚠️ partial / ❌ broken.
+**13 phases implemented (2004 lines of Rust). P0 isolation holes fixed
+(M1, 2026-08-16); remaining issues are P1/P2 (correctness/depth), not escape
+holes.** See [docs/PLAN.md](docs/PLAN.md) for the authoritative, line-referenced
+audit and remediation roadmap. Per-phase status uses ✅ works / ⚠️ partial /
+❌ broken.
 
 ### Feature Status (honest)
 
 | Phase | Feature | Status | Notes |
 |-------|---------|--------|-------|
 | 1 | Project skeleton + CLI + subprocess execution | ✅ | — |
-| 2 | Namespace isolation (PID/mount/UTS) | ✅ | — |
+| 2 | Namespace isolation (PID/mount/UTS/Net) | ✅ | NEWNET now always unshared (M1) |
 | 3 | Overlayfs rootfs + pivot_root | ⚠️ | no `/dev`, `/tmp`, `/sys`; OCI `readonly` ignored (P2-1) |
 | 4 | cgroup resource limits (CPU/memory/pids) | ⚠️ | no v2 validation, `swap.max` hardcoded, no controller enabling (P2-2) |
-| 5 | seccomp + capabilities hardening | ❌ | `clone`/`open_by_handle_at`/`process_vm_*` allowed; bounding set never cleared (P0-3, P0-4) |
+| 5 | seccomp + capabilities hardening | ✅ | `clone` flag-masked; escape syscalls removed; bounding set cleared (M1) |
 | 6 | OCI Bundle support (config.json parsing) | ❌ | only 3 of ~10 claimed fields honored; `linux.namespaces` silently dropped (P1-1) |
-| 7 | Network namespace + proxy environment | ❌ | `--proxy` is env-vars-only (no NEWNET); default-only path has no netns leak (P0-2) |
+| 7 | Network namespace + proxy environment | ✅ | `--proxy` now real isolation (loopback-only + env); bridge removed (M1) |
 | 8 | HTTP API + daemon mode + Prometheus metrics | ⚠️ | limited `CreateRequest`; failed sandboxes miscounted as completed (P1-3, P1-4, P2-5) |
 | 9 | Local image management (import/list/remove/run --image) | ⚠️ | no content addressing, no layering, no metadata (P2-3) |
 | 10 | Docker Registry image pull | ⚠️ | in-memory blobs (OOM risk); never fetches config blob; Docker Hub only (P2-4) |
-| 11 | Network bridge + port mapping | ❌ | **contradicts design** (AGENTS.md forbids bridge); `--network` mutates host netns (P0-1) |
+| 11 | ~~Network bridge + port mapping~~ | 🗑 | removed in M1 (Option A — contradicted design & leaked to host) |
 | 12 | Volume mounting (bind mounts) | ✅ | — |
 | 13 | Exec into running containers | ⚠️ | 23-line `nsenter` wrapper; missing `-i/-U/-C`, no TTY, no PID validation (P1-5) |
 
@@ -146,9 +149,8 @@ OPTIONS:
     --cpu-period <MICROS>   CPU period in microseconds (default: 100000)
     --pids-limit <NUM>      Maximum number of processes
     --dangerous             Disable seccomp and capability restrictions
-    --proxy <URL>           HTTP proxy for network isolation
-    --network <MODE>        Network mode (bridge for NAT networking)
-    -p, --publish <PORT>    Publish container port (host:container)
+    --proxy <URL>           HTTP proxy (sandbox netns is loopback-only; proxy
+                            env vars are set for cooperating clients)
     -v, --volume <VOLUME>   Bind mount volume (host:container[:ro])
     --oci <PATH>            OCI bundle path (Phase 6)
     --image <NAME>          Run from imported image (Phase 9)
@@ -157,8 +159,7 @@ EXAMPLES:
     tinybox run -- echo "hello"
     tinybox run --root /tmp/alpine-rootfs -- /bin/sh
     tinybox run --image alpine -- /bin/sh
-    tinybox run --network bridge -- ping 8.8.8.8
-    tinybox run --network bridge -p 8080:80 -- python3 -m http.server 80
+    tinybox run --proxy http://127.0.0.1:8080 -- wget -q -O- http://example.com
     tinybox run -v /host/path:/container/path -- ls /container/path
     tinybox run -v /data:/data:ro -- cat /data/file.txt
     tinybox run --memory 64m -- python3 -c "a = bytearray(200*1024*1024)"
@@ -238,49 +239,52 @@ sudo ./scripts/test_phase10.sh
 | Phase | Feature | Lines (Rust) | Status |
 |-------|---------|-------------|--------|
 | 1 | Project skeleton + CLI + subprocess execution | ~150 | ✅ |
-| 2 | Namespace isolation (PID/mount/UTS) | ~200 | ✅ |
+| 2 | Namespace isolation (PID/mount/UTS/Net) | ~200 | ✅ |
 | 3 | Overlayfs rootfs + pivot_root | ~150 | ⚠️ |
 | 4 | cgroup resource limits (CPU/memory/pids) | ~200 | ⚠️ |
-| 5 | seccomp + capabilities hardening | ~250 | ❌ |
+| 5 | seccomp + capabilities hardening | ~250 | ✅ |
 | 6 | OCI Bundle support (config.json parsing) | ~350 | ❌ |
-| 7 | Network namespace + proxy environment | ~250 | ❌ |
+| 7 | Network namespace + proxy environment | ~250 | ✅ |
 | 8 | HTTP API + daemon mode + Prometheus metrics | ~350 | ⚠️ |
 | 9 | Local image management (import/list/remove) | ~150 | ⚠️ |
 | 10 | Docker Registry image pull | ~150 | ⚠️ |
-| 11 | Network bridge + port mapping | ~200 | ❌ |
+| 11 | ~~Network bridge + port mapping~~ | ~200 | 🗑 removed |
 | 12 | Volume mounting (bind mounts) | ~50 | ✅ |
 | 13 | Exec into running containers | ~50 | ⚠️ |
 
-Status: ✅ works · ⚠️ partial (open P1/P2) · ❌ broken (open P0 or fails acceptance).
-See [PLAN.md](docs/PLAN.md) for the per-phase open-item mapping.
+Status: ✅ works · ⚠️ partial (open P1/P2) · ❌ broken (open P0 or fails
+acceptance) · 🗑 removed. Phase 11 was removed in M1 (Option A) — it
+contradicted the documented "no bridge" design and leaked to the host netns.
+See [docs/PLAN.md](docs/PLAN.md) for the per-phase open-item mapping.
 
 ## Known Issues
 
-> This section summarizes the open defects; see [PLAN.md](docs/PLAN.md) for the
+> This section summarizes the open defects; see [docs/PLAN.md](docs/PLAN.md) for the
 > full, line-referenced list with fixes and the remediation roadmap.
 
-### P0 — Isolation / Security (must fix before any untrusted use)
-- **`--network bridge` configures the host instead of the sandbox**
-  (`src/sandbox.rs:141-143`, `src/network.rs`). The bridge path also
-  contradicts AGENTS.md's "no TUN/TAP, no bridge" constraint.
-- **`--proxy` is not isolation**: only sets `HTTP_PROXY` env vars; the
-  sandbox shares the host netns, so any binary can bypass the proxy.
-- **seccomp allow-list has escape primitives**: `clone` (unrestricted flags),
-  `open_by_handle_at`, `process_vm_readv/writev`, `perf_event_open` are
-  allowed; `CAP_DAC_READ_SEARCH` is not dropped.
-- **Capability bounding set never cleared**: a setuid binary exec'd in the
-  sandbox re-acquires dropped caps on `execve`.
+### ✅ P0 — Isolation / Security (FIXED in M1, 2026-08-16)
+All four P0 escape/leak holes are closed:
+- ~~`--network bridge` configures the host instead of the sandbox~~ → the
+  bridge/veth/NAT path was **removed** (`src/network.rs` deleted, Option A).
+- ~~`--proxy` is not isolation~~ → the sandbox now **always** unshares
+  `CLONE_NEWNET`; `--proxy` = loopback-only netns + env vars.
+- ~~seccomp allow-list has escape primitives~~ → `clone` is now
+  flag-masked (forbids `CLONE_NEW*`); `open_by_handle_at`/`process_vm_*`/
+  `perf_event_open`/NUMA-IO setters removed; `CAP_DAC_READ_SEARCH`/
+  `CAP_NET_RAW`/`CAP_SETFCAP`/etc. now dropped.
+- ~~capability bounding set never cleared~~ → `drop_capabilities` now calls
+  `prctl(PR_CAPBSET_DROP)` for each dangerous cap.
 
 ### P1 — Correctness / Contradictions
 - **OCI support is shallow**: `linux.namespaces`, `root.readonly`, `mounts`,
   `process.{cwd,user}` are all silently ignored — only `args`/`env`/`root.path`
   are honored (3 of the claimed "core 10" fields).
-- **`ip`/`iptables` non-zero exit is silently treated as success** across
-  `network.rs` (moot if the bridge path is removed).
+- ~~`ip`/`iptables` non-zero exit silently treated as success~~ → resolved:
+  `network.rs` was removed in M1.
 - **daemon conflates failed and completed sandboxes**: `exit_code = result.ok()`
   marks crashes as `completed`; `/metrics` overcounts.
-- **daemon `CreateRequest` cannot set cpus/volumes/ports/network/...** — the
-  API can't exercise most CLI features.
+- **daemon `CreateRequest` cannot set cpus/volumes/...** — the API can't
+  exercise most CLI features.
 - **`exec` is a 23-line `nsenter` wrapper**: missing `-i/-U/-C`, no TTY, no
   validation that the PID is a tinybox sandbox.
 

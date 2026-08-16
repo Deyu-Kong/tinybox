@@ -118,6 +118,28 @@ fn test_capabilities_dropped() {
         "CAP_NET_ADMIN should be dropped, but CapEff is {:016x}",
         cap_value
     );
+
+    // P0-4 regression: the capability bounding set must also be cleared for
+    // the dangerous caps, so a setuid binary exec'd in the sandbox cannot
+    // re-acquire them on execve(2).
+    let cap_bnd = stdout
+        .lines()
+        .find(|line| line.starts_with("CapBnd:"))
+        .expect("CapBnd not found in /proc/self/status");
+    let bnd_value = u64::from_str_radix(cap_bnd.split_whitespace().nth(1).unwrap(), 16)
+        .expect("failed to parse CapBnd");
+    assert_eq!(
+        bnd_value & cap_sys_admin,
+        0,
+        "CAP_SYS_ADMIN should be absent from the bounding set, but CapBnd is {:016x}",
+        bnd_value
+    );
+    assert_eq!(
+        bnd_value & cap_net_admin,
+        0,
+        "CAP_NET_ADMIN should be absent from the bounding set, but CapBnd is {:016x}",
+        bnd_value
+    );
 }
 
 #[test]

@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use seccompiler::{
-    apply_filter_all_threads, BpfProgram, SeccompAction, SeccompFilter, SeccompRule,
+    apply_filter_all_threads, BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp,
+    SeccompCondition, SeccompFilter, SeccompRule,
 };
 use std::collections::BTreeMap;
 
@@ -17,25 +18,50 @@ struct CapHeader {
     pid: i32,
 }
 
-const CAP_SYS_ADMIN: u32 = 21;
+const CAP_DAC_READ_SEARCH: u32 = 2;
 const CAP_NET_ADMIN: u32 = 12;
+const CAP_NET_RAW: u32 = 13;
 const CAP_SYS_MODULE: u32 = 16;
 const CAP_SYS_RAWIO: u32 = 17;
 const CAP_SYS_PTRACE: u32 = 19;
+const CAP_SYS_ADMIN: u32 = 21;
 const CAP_SYS_BOOT: u32 = 22;
 const CAP_SYS_TIME: u32 = 25;
 const CAP_MKNOD: u32 = 27;
+const CAP_AUDIT_WRITE: u32 = 29;
+const CAP_AUDIT_CONTROL: u32 = 30;
+const CAP_SETFCAP: u32 = 31;
+const CAP_SYSLOG: u32 = 34;
 
-const DANGEROUS_CAPS: [u32; 8] = [
-    CAP_SYS_ADMIN,
+// P0-3: caps that must be absent from the sandbox. `CAP_DAC_READ_SEARCH`
+// pairs with blocking `open_by_handle_at` to close a classic container
+// escape; `CAP_NET_RAW` is unnecessary once the netns is loopback-only;
+// `CAP_SETFCAP` prevents planting setcap binaries for later privilege
+// escalation.
+const DANGEROUS_CAPS: [u32; 14] = [
+    CAP_DAC_READ_SEARCH,
     CAP_NET_ADMIN,
+    CAP_NET_RAW,
     CAP_SYS_MODULE,
     CAP_SYS_RAWIO,
     CAP_SYS_PTRACE,
+    CAP_SYS_ADMIN,
     CAP_SYS_BOOT,
     CAP_SYS_TIME,
     CAP_MKNOD,
+    CAP_AUDIT_WRITE,
+    CAP_AUDIT_CONTROL,
+    CAP_SETFCAP,
+    CAP_SYSLOG,
 ];
+
+/// Mask of all `CLONE_NEW*` flags (NS|CGROUP|UTS|IPC|USER|PID|NET).
+/// `clone(2)` is allowed by seccomp only when none of these bits are set,
+/// so a sandboxed process cannot create fresh namespaces to sidestep
+/// isolation. `clone3` is absent from the allow-list (its flags live behind
+/// a pointer seccomp cannot inspect), so it stays blocked with SIGSYS.
+/// See PLAN.md P0-3.
+const CLONE_NEWNAMESPACES_MASK: u64 = 0x7E020000;
 
 pub fn drop_capabilities(dangerous: bool) -> Result<()> {
     if dangerous {
@@ -101,6 +127,22 @@ pub fn drop_capabilities(dangerous: bool) -> Result<()> {
         );
     }
 
+    // SAFETY (P0-4): clear the capability bounding set so a setuid binary
+    // exec'd inside the sandbox cannot re-acquire dropped caps from the
+    // bounding set on execve(2). capset() above only clears
+    // effective/permitted/inheritable/ambient; without this loop the
+    // bounding set still grants caps to setuid execs.
+    for cap in &DANGEROUS_CAPS {
+        let ret = unsafe { libc::prctl(libc::PR_CAPBSET_DROP, *cap as u64, 0, 0, 0) };
+        if ret != 0 {
+            return Err(anyhow::anyhow!(
+                "PR_CAPBSET_DROP for cap {} failed: {}",
+                cap,
+                std::io::Error::last_os_error()
+            ));
+        }
+    }
+
     Ok(())
 }
 
@@ -109,6 +151,35 @@ pub fn apply_seccomp_filter(dangerous: bool) -> Result<()> {
         return Ok(());
     }
 
+    let rules = build_rules()?;
+
+    // SAFETY: this is an allow-list filter; any syscall not explicitly
+    // permitted (or, for `clone`, not satisfying the flag mask) is killed
+    // with SIGSYS. Residual risk: argument-limited syscalls other than
+    // `clone` are unconditionally allowed once the syscall number matches,
+    // so a path-based escape (e.g. via still-allowed `open*`) is not
+    // prevented here — it is mitigated by the namespace + cap layer. Use
+    // `--dangerous` only for trusted debugging.
+    let filter = SeccompFilter::new(
+        rules,
+        SeccompAction::Trap,
+        SeccompAction::Allow,
+        std::env::consts::ARCH.try_into().unwrap(),
+    )
+    .context("failed to create seccomp filter")?;
+
+    let program: BpfProgram = filter
+        .try_into()
+        .context("failed to compile seccomp filter")?;
+
+    apply_filter_all_threads(&program).context("failed to apply seccomp filter")?;
+
+    Ok(())
+}
+
+/// Build the seccomp allow-list as a syscall→rule map. Extracted so the
+/// rule set is unit-testable without applying the filter.
+fn build_rules() -> Result<BTreeMap<i64, Vec<SeccompRule>>> {
     let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
 
     let allowed_syscalls = vec![
@@ -160,7 +231,8 @@ pub fn apply_seccomp_filter(dangerous: bool) -> Result<()> {
         libc::SYS_socketpair,
         libc::SYS_setsockopt,
         libc::SYS_getsockopt,
-        libc::SYS_clone,
+        // `clone` is intentionally absent from this vector: it is inserted
+        // below with a rule that forbids CLONE_NEW* flags (P0-3).
         libc::SYS_fork,
         libc::SYS_vfork,
         libc::SYS_execve,
@@ -290,8 +362,8 @@ pub fn apply_seccomp_filter(dangerous: bool) -> Result<()> {
         libc::SYS_epoll_ctl,
         libc::SYS_tgkill,
         libc::SYS_utimes,
-        libc::SYS_mbind,
-        libc::SYS_set_mempolicy,
+        // P0-3: `mbind` / `set_mempolicy` removed (host NUMA interference);
+        // `get_mempolicy` (read-only query) is retained.
         libc::SYS_get_mempolicy,
         libc::SYS_mq_open,
         libc::SYS_mq_unlink,
@@ -300,12 +372,12 @@ pub fn apply_seccomp_filter(dangerous: bool) -> Result<()> {
         libc::SYS_mq_notify,
         libc::SYS_mq_getsetattr,
         libc::SYS_waitid,
-        libc::SYS_ioprio_set,
+        // P0-3: `ioprio_set` removed (host block-IO interference).
         libc::SYS_ioprio_get,
         libc::SYS_inotify_init,
         libc::SYS_inotify_add_watch,
         libc::SYS_inotify_rm_watch,
-        libc::SYS_migrate_pages,
+        // P0-3: `migrate_pages` / `move_pages` removed (host NUMA interference).
         libc::SYS_openat,
         libc::SYS_mkdirat,
         libc::SYS_mknodat,
@@ -327,7 +399,7 @@ pub fn apply_seccomp_filter(dangerous: bool) -> Result<()> {
         libc::SYS_tee,
         libc::SYS_sync_file_range,
         libc::SYS_vmsplice,
-        libc::SYS_move_pages,
+        // P0-3: `move_pages` removed (host NUMA interference).
         libc::SYS_utimensat,
         libc::SYS_epoll_pwait,
         libc::SYS_signalfd,
@@ -346,16 +418,17 @@ pub fn apply_seccomp_filter(dangerous: bool) -> Result<()> {
         libc::SYS_preadv,
         libc::SYS_pwritev,
         libc::SYS_rt_tgsigqueueinfo,
-        libc::SYS_perf_event_open,
+        // P0-3: `perf_event_open` removed (side-channel / host interference).
         libc::SYS_recvmmsg,
         libc::SYS_prlimit64,
         libc::SYS_name_to_handle_at,
-        libc::SYS_open_by_handle_at,
+        // P0-3: `open_by_handle_at` removed (classic container escape;
+        // also CAP_DAC_READ_SEARCH is dropped above).
         libc::SYS_syncfs,
         libc::SYS_sendmmsg,
         libc::SYS_getcpu,
-        libc::SYS_process_vm_readv,
-        libc::SYS_process_vm_writev,
+        // P0-3: `process_vm_readv` / `process_vm_writev` removed
+        // (cross-process memory read/write).
         libc::SYS_sched_setattr,
         libc::SYS_sched_getattr,
         libc::SYS_renameat2,
@@ -379,21 +452,20 @@ pub fn apply_seccomp_filter(dangerous: bool) -> Result<()> {
         rules.insert(syscall, vec![]);
     }
 
-    let filter = SeccompFilter::new(
-        rules,
-        SeccompAction::Trap,
-        SeccompAction::Allow,
-        std::env::consts::ARCH.try_into().unwrap(),
-    )
-    .context("failed to create seccomp filter")?;
+    // P0-3: allow `clone` only when no `CLONE_NEW*` flag is set, so a
+    // sandboxed process cannot create fresh namespaces to sidestep the
+    // isolation we set up (NEWPID/NEWNS/NEWUTS/NEWNET). Normal fork/exec
+    // (e.g. musl's `fork()` = `clone(SIGCHLD)`) is unaffected because it
+    // sets none of these bits. `clone3` is not in the allow-list at all.
+    let clone_rule = SeccompRule::new(vec![SeccompCondition::new(
+        0,
+        SeccompCmpArgLen::Qword,
+        SeccompCmpOp::MaskedEq(CLONE_NEWNAMESPACES_MASK),
+        0,
+    )?])?;
+    rules.insert(libc::SYS_clone, vec![clone_rule]);
 
-    let program: BpfProgram = filter
-        .try_into()
-        .context("failed to compile seccomp filter")?;
-
-    apply_filter_all_threads(&program).context("failed to apply seccomp filter")?;
-
-    Ok(())
+    Ok(rules)
 }
 
 #[cfg(test)]
@@ -420,5 +492,43 @@ mod tests {
     fn test_dangerous_mode_skips_filter() {
         let result = apply_seccomp_filter(true);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_clone_rule_blocks_namespace_flags() {
+        // P0-3: `clone` must NOT be unconditionally allowed (`vec![]`); it
+        // must carry a condition that forbids CLONE_NEW* flags.
+        let rules = build_rules().unwrap();
+        let clone_rules = rules
+            .get(&libc::SYS_clone)
+            .expect("clone must be present in the allow-list");
+        assert!(
+            !clone_rules.is_empty(),
+            "clone must have a flag-condition rule, not an unconditional allow"
+        );
+    }
+
+    #[test]
+    fn test_escape_syscalls_excluded() {
+        // P0-3: these escape/interference primitives must be absent from
+        // the allow-list.
+        let rules = build_rules().unwrap();
+        let excluded = [
+            libc::SYS_open_by_handle_at,
+            libc::SYS_process_vm_readv,
+            libc::SYS_process_vm_writev,
+            libc::SYS_perf_event_open,
+            libc::SYS_ioprio_set,
+            libc::SYS_mbind,
+            libc::SYS_set_mempolicy,
+            libc::SYS_migrate_pages,
+            libc::SYS_move_pages,
+        ];
+        for sys in excluded {
+            assert!(
+                !rules.contains_key(&sys),
+                "syscall {sys} must be excluded from the allow-list (P0-3)"
+            );
+        }
     }
 }

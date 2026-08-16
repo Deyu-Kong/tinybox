@@ -2,7 +2,6 @@ mod cgroup;
 mod daemon;
 mod exec;
 mod image;
-mod network;
 mod oci;
 mod registry;
 mod rootfs;
@@ -65,12 +64,6 @@ enum Commands {
 
         #[arg(long)]
         image: Option<String>,
-
-        #[arg(long)]
-        network: Option<String>,
-
-        #[arg(short = 'p', long = "publish")]
-        ports: Vec<String>,
 
         #[arg(short = 'v', long = "volume")]
         volumes: Vec<String>,
@@ -158,8 +151,6 @@ fn main() -> Result<()> {
             proxy,
             oci,
             image,
-            network,
-            ports,
             volumes,
         } => {
             let (command, root, oci_env) = if let Some(bundle_path) = oci {
@@ -189,8 +180,6 @@ fn main() -> Result<()> {
                 rootfs: root.map(std::path::PathBuf::from),
                 env: oci_env,
                 proxy,
-                network,
-                ports,
                 volumes,
                 memory: memory_bytes,
                 cpus,

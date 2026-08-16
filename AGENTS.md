@@ -10,11 +10,14 @@
 
 tinybox is a from-scratch Rust implementation of a Linux sandbox runtime, similar to `runc` but simplified and focused on Agent workloads. It is built incrementally across 8 phases, each producing a runnable, verifiable deliverable.
 
-> **⚠️ Security status (2026-08-16): NOT a security boundary.** Four P0
-> isolation holes are open — most importantly the `--network bridge` path
-> mutates the host netns, and the seccomp allow-list contains escape
-> primitives. Do not confine untrusted workloads until docs/PLAN.md Milestone M1
-> is complete.
+> **⚠️ Security status (2026-08-16, post-M1): P0 isolation holes fixed,
+> hardening incomplete.** Milestone M1 closed all four P0 items: the
+> bridge/veth/NAT path was removed (Option A), the sandbox now always
+> unshares `CLONE_NEWNET`, `clone` is seccomp-flag-masked to forbid
+> `CLONE_NEW*`, and the capability bounding set is cleared. The `tinybox
+> run` path is now a defensible isolation barrier. Remaining open items
+> (P1 OCI field-honoring, P2 `/dev`/`/tmp`/`/sys` hardening, rootful) are
+> correctness/depth issues, not escape holes. See [docs/PLAN.md](docs/PLAN.md).
 
 ## Conventions
 
@@ -134,12 +137,11 @@ tinybox run --oci /tmp/oci-bundle   # → "hello-oci"
 tinybox run -- ping 8.8.8.8         # → network unreachable
 tinybox run --proxy http://127.0.0.1:8080 -- wget -q -O- http://example.com  # → succeeds
 ```
-> ⚠️ **P0-1 / P0-2 (open):** `--proxy` currently sets env vars only and does
-> **not** unshare `CLONE_NEWNET`, so the sandbox shares the host netns — the
-> `--proxy wget` acceptance passes because the host has network, not because
-> traffic is proxied. The `ping` acceptance only holds when **neither**
-> `--proxy` nor `--network` is passed. The `--network bridge` path
-> additionally mutates the host netns (see P0-1 in docs/PLAN.md).
+> ⚠️ **P0-1 / P0-2 (RESOLVED in M1, 2026-08-16):** the bridge path was
+> removed (Option A) and the sandbox now always unshares `CLONE_NEWNET`.
+> `--proxy` now provides real isolation: loopback-only netns + env vars.
+> `scripts/test_phase7.sh` Test 3 asserts `--proxy` mode has no default
+> route.
 
 ### Phase 8
 ```bash
@@ -160,11 +162,13 @@ curl http://127.0.0.1:8080/metrics  # → Prometheus metrics
 - Do NOT use Docker, containerd, or runc libraries (this is a from-scratch project)
 - Do NOT add Windows/macOS support (Linux-only)
 
-> **Constraint violation in the tree (2026-08-16):** Phase 11 (`src/network.rs`)
-> implemented a bridge + veth + NAT networking path that **directly violates**
-> the "no TUN/TAP, no bridge" rule above, and does so unsafely (see P0-1 in
-> docs/PLAN.md). The decision to keep or remove it is recorded in the Decision Log
-> below; until M1 lands, treat `--network bridge` as broken and dangerous.
+> **Constraint violation in the tree (2026-08-16): RESOLVED.** Phase 11
+> (`src/network.rs`) implemented a bridge + veth + NAT path that violated
+> the "no TUN/TAP, no bridge" rule above and leaked to the host netns
+> (P0-1). Milestone M1 (2026-08-16) took Option A: `src/network.rs` was
+> deleted, `--network`/`-p`/`--publish` flags removed, and the sandbox now
+> always unshares `CLONE_NEWNET`. The constraint and the tree are now
+> consistent.
 
 ### What to prioritize
 - **Correctness**: The sandbox must actually isolate. Leaking processes to the host is a bug.
@@ -172,9 +176,11 @@ curl http://127.0.0.1:8080/metrics  # → Prometheus metrics
 - **Measurability**: Every optimization must be backed by a benchmark number.
 - **Simplicity**: ~2000 lines total Rust. Favor readable code over clever abstractions.
 
-> **Safety status (2026-08-16):** the "default seccomp policy must prevent
-> escape" priority is **currently not met** — P0-3 (escape primitives in the
-> allow-list) and P0-4 (bounding set never cleared) are open.
+> **Safety status (2026-08-16, post-M1):** the "default seccomp policy must
+> prevent escape" priority is **now met** — P0-3 (escape primitives in the
+> allow-list) and P0-4 (bounding set never cleared) are fixed. `clone` is
+> flag-masked, escape syscalls are removed, and `PR_CAPBSET_DROP` is called
+> for all 14 dangerous caps.
 
 ## Decision Log
 
@@ -212,6 +218,34 @@ curl http://127.0.0.1:8080/metrics  # → Prometheus metrics
 - **Docs policy**: README and AGENTS.md now reflect real per-phase status
   (✅/⚠️/❌) and point to docs/PLAN.md as the source of truth. A phase is "✅" only
   when its acceptance criteria pass AND it has no open P0/P1 item.
+
+### 2026-08-16: Milestone M1 — P0 isolation holes closed
+- **Decision**: P0-1 took **Option A** — `src/network.rs` (bridge + veth +
+  NAT) was deleted entirely; `--network`/`-p`/`--publish` flags removed;
+  `SandboxConfig.network`/`ports` fields removed. Rationale: the bridge path
+  contradicted the 2026-08-02 "no bridge" decision and the "no TUN/TAP, no
+  bridge" constraint, and its ordering bug leaked configuration onto the
+  host netns. Restoring the documented proxy-only design also dropped the
+  `ip`/`iptables` runtime dependency.
+- **P0-2**: `child_main` now **always** inserts `CLONE_NEWNET` (the
+  `proxy.is_none() && network.is_none()` gate was removed), so `--proxy`
+  yields a loopback-only netns + env vars rather than sharing the host netns.
+- **P0-3**: `clone` now carries a `SeccompCmpOp::MaskedEq(0x7E020000)` rule
+  on arg0 that forbids any `CLONE_NEW*` bit (→ SIGSYS); `clone3` remains
+  absent from the allow-list. Nine escape/interference syscalls were
+  removed (`open_by_handle_at`, `process_vm_readv/writev`,
+  `perf_event_open`, `ioprio_set`, `mbind`, `set_mempolicy`,
+  `migrate_pages`, `move_pages`). `DANGEROUS_CAPS` grew 8 → 14 (added
+  `CAP_DAC_READ_SEARCH`, `CAP_NET_RAW`, `CAP_AUDIT_WRITE`,
+  `CAP_AUDIT_CONTROL`, `CAP_SETFCAP`, `CAP_SYSLOG`). Rule-building
+  extracted into `build_rules()` for unit testing.
+- **P0-4**: `drop_capabilities` now loops `DANGEROUS_CAPS` and calls
+  `prctl(PR_CAPBSET_DROP, cap)` after the `capset` + ambient clear.
+- **Verification**: `scripts/test_phase5.sh` Tests 5–7 (normal fork ok,
+  `clone(CLONE_NEWUSER)` → SIGSYS, `CapBnd` cleared); `scripts/test_phase7.sh`
+  Test 3 (`--proxy` no default route); two new seccomp unit tests; the
+  `tests/phase5.rs` cap test extended to assert `CapBnd`. All acceptance
+  gates green; `cargo test` (58 tests) + `cargo clippy -- -D warnings` clean.
 
 ## Related Projects
 

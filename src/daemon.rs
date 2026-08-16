@@ -83,8 +83,6 @@ async fn create(
             rootfs: Some(PathBuf::from(req.rootfs)),
             env: Vec::new(),
             proxy: req.proxy,
-            network: None,
-            ports: Vec::new(),
             volumes: Vec::new(),
             memory: req.memory_limit_mb.map(|v| v * 1024 * 1024),
             cpus: None,

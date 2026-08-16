@@ -21,4 +21,8 @@ else
     exit 1
 fi
 
+echo -n "Test 3: --proxy mode is network-isolated (no default route, P0-2)... "
+$TINYBOX run --proxy http://127.0.0.1:8080 -- sh -c 'test ! -s /proc/net/route'
+echo "PASS"
+
 echo "=== Phase 7 basic tests passed ==="
