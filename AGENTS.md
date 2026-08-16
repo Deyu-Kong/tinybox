@@ -42,6 +42,8 @@ Prefer minimal dependencies. Approved crates:
 - `seccompiler` (seccomp BPF filter generation — used by Phase 5)
 - `tar` / `flate2` (image tarball extraction — used by Phase 9/10)
 - `reqwest` (Docker registry HTTP — used by Phase 10; blocking feature)
+- `aya` or `libbpf-rs` (eBPF — **research track R0 only**, not yet added)
+  (fanotify and Landlock are reached via `libc` syscalls, no crate needed)
 
 Do NOT add dependencies without a clear reason. Avoid full-blown container runtimes, virtualization libraries, or OCI SDKs.
 
@@ -157,7 +159,10 @@ curl http://127.0.0.1:8080/metrics  # → Prometheus metrics
 - Do NOT add GPU support (no passthrough, no CUDA)
 - Do NOT implement image pulling (rely on `docker export` or pre-existing rootfs)
 - Do NOT implement multi-node orchestration (single-host only)
-- Do NOT handle SELinux or AppArmor (seccomp is sufficient)
+- Do NOT handle SELinux or AppArmor (seccomp + capabilities is the v1.0 LSM
+  story; **Landlock is an explicit research-track addition** for the FS
+  capability dimension — see [docs/VISION.md](docs/VISION.md) R1, not a
+  contradiction of this rule)
 - Do NOT implement user-mode networking (no TUN/TAP, no bridge)
 - Do NOT use Docker, containerd, or runc libraries (this is a from-scratch project)
 - Do NOT add Windows/macOS support (Linux-only)
@@ -168,13 +173,18 @@ curl http://127.0.0.1:8080/metrics  # → Prometheus metrics
 > (P0-1). Milestone M1 (2026-08-16) took Option A: `src/network.rs` was
 > deleted, `--network`/`-p`/`--publish` flags removed, and the sandbox now
 > always unshares `CLONE_NEWNET`. The constraint and the tree are now
-> consistent.
+> consistent. (Network enforcement for the research track stays
+> proxy-based — see [docs/VISION.md](docs/VISION.md); eBPF, if added in R0,
+> is for audit/observation, not a bridge replacement.)
 
 ### What to prioritize
 - **Correctness**: The sandbox must actually isolate. Leaking processes to the host is a bug.
 - **Safety**: Default seccomp policy must prevent escape. `--dangerous` is opt-in.
 - **Measurability**: Every optimization must be backed by a benchmark number.
-- **Simplicity**: ~2000 lines total Rust. Favor readable code over clever abstractions.
+- **Simplicity**: ~2000 lines total Rust for the **static isolation skeleton**
+  (remediation track M0–M4). The research track (R0–R3 in
+  [docs/VISION.md](docs/VISION.md)) is separately scoped and will exceed
+  this budget. Favor readable code over clever abstractions.
 
 > **Safety status (2026-08-16, post-M1):** the "default seccomp policy must
 > prevent escape" priority is **now met** — P0-3 (escape primitives in the
@@ -246,6 +256,32 @@ curl http://127.0.0.1:8080/metrics  # → Prometheus metrics
   Test 3 (`--proxy` no default route); two new seccomp unit tests; the
   `tests/phase5.rs` cap test extended to assert `CapBnd`. All acceptance
   gates green; `cargo test` (58 tests) + `cargo clippy -- -D warnings` clean.
+
+### 2026-08-16: Vision reconciliation
+- **Outcome**: [docs/VISION.md](docs/VISION.md) (research north star, R0–R3)
+  was reconciled with [docs/PLAN.md](docs/PLAN.md) (remediation track, M0–M4).
+  Dependency rule recorded in both: **R0 may run in parallel with M2; R1
+  starts only after M2 closes**.
+- **Re-prioritization**: P2-1 (`/dev`/`/tmp`/`/sys` hardening) was pulled
+  forward from M3 into M2 — R0's acceptance (a sandboxed `pip install`
+  producing an audit log) needs a working `/dev`/`/tmp`, so P2-1 is a
+  prerequisite for the research track, not polish.
+- **P1-2 resolved**: with `network.rs` deleted in M1, the `ip`/`iptables`
+  silent-failure class no longer exists; marked RESOLVED in PLAN.md.
+- **Open design questions surfaced** (not yet decided — flagged for R0/R1):
+  - seccomp filters are **monotonic** (can only stack, never remove) →
+    bidirectional dynamic grant cannot live in seccomp; network/FS/resource
+    dimensions must carry the dynamic layer (eBPF maps, fanotify/Landlock,
+    cgroup resize). `SECCOMP_RET_USER_NOTIF` is the only bidirectional
+    syscall path, at a per-call latency cost.
+  - proxy stays the **network enforcement** layer (L7, easy per-host
+    allow/deny); eBPF egress is **audit/observation only**, not enforcement
+    (keeps the "no bridge" constraint and avoids brittle TLS-SNI parsing).
+  - Landlock is the candidate **FS enforcement** primitive (in-kernel, path
+    policy); fanotify is the FS **audit** primitive.
+- **LOC budget reframed**: the ~2000-line target now explicitly scopes only
+  the static skeleton (M0–M4); the research track (R0–R3) is separately
+  scoped and will exceed it.
 
 ## Related Projects
 

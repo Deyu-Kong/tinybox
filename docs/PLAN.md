@@ -6,6 +6,13 @@ by severity, and proposes a concrete fix. The README and AGENTS.md are kept in
 sync with the status here; "Completed" in those docs refers only to features
 that satisfy the acceptance criteria **and** have no open P0/P1 item below.
 
+> **Two tracks.** This file owns the **remediation track (M0–M4)** — bringing
+> today's claimed features up to spec. [VISION.md](VISION.md) owns the
+> **research track (R0–R3)** — the Agent-aware dynamic capability layer that
+> distinguishes tinybox from runc. Dependency rule: R0 may run in parallel with
+> M2; R1 starts only after M2 closes. When the two disagree, VISION.md wins on
+> *forward planning*; PLAN.md wins on *current defect status*.
+
 Conventions:
 - `file:line` references use the tree as of commit `b73c7b1` (phase 13).
 - Severity: **P0** = isolation/security broken · **P1** = correctness bug or
@@ -20,7 +27,7 @@ Conventions:
 | Severity | Count | Status |
 |----------|-------|--------|
 | P0 (isolation/security) | 4 | ✅ all resolved (M1 complete, 2026-08-16) |
-| P1 (correctness/contradiction) | 5 | open |
+| P1 (correctness/contradiction) | 5 | 1 resolved (P1-2), 4 open |
 | P2 (shallow feature) | 5 | open |
 | P3 (polish) | 6 | open (one incidental fix landed) |
 
@@ -176,7 +183,7 @@ boundary — but it no longer leaks to the host.
   ignored. Update the Phase 6 acceptance test to assert a namespace-restricted
   config actually restricts namespaces.
 
-### P1-2 `ip`/`iptables` non-zero exit is silently treated as success
+### P1-2 `ip`/`iptables` non-zero exit is silently treated as success ✅
 - **Problem**: Throughout `network.rs`, `.status().context(...)?` only
   propagates the `io::Error` from spawning the command; a non-zero exit of
   `ip`/`iptables` is swallowed and treated as success.
@@ -187,6 +194,9 @@ boundary — but it no longer leaks to the host.
 - **Fix**: Wrap each command in a helper `fn run(cmd) -> Result<()>` that
   checks `status.success()` and returns `anyhow::bail!` with stderr otherwise.
   (Moot if P0-1 Option A is taken — `network.rs` is deleted.)
+- **Resolution (2026-08-16, M1)**: `network.rs` was deleted entirely
+  (P0-1 Option A), so this class of bug no longer exists. The `ip`/`iptables`
+  runtime dependency is gone with it.
 
 ### P1-3 daemon conflates failed and completed sandboxes
 - **Problem**: `create` sets `status="completed"` and `exit_code = result.ok()`
@@ -324,25 +334,36 @@ milestone.
 ### Milestone M2 — Make claimed features actually work
 1. P1-1: honor OCI `linux.namespaces`, `root.readonly`, `process.cwd`,
    `process.user`.
-2. P1-2: (skipped if M1 took P0-1 Option A.)
-3. P1-3: daemon status `{running,completed,failed}` + failed metrics counter.
-4. P1-4: extend `CreateRequest`; reject remote `dangerous`.
-5. P1-5: `exec` via `setns`, namespace-complete, PID-validated, with TTY.
+2. P1-3: daemon status `{running,completed,failed}` + failed metrics counter.
+3. P1-4: extend `CreateRequest`; reject remote `dangerous`.
+4. P1-5: `exec` via `setns`, namespace-complete, PID-validated, with TTY.
+5. **P2-1 pulled forward** (was M3): full `/dev`, `/tmp`, `/sys` setup. R0's
+   acceptance requires a real `pip install` to run inside a sandbox, which
+   needs `/dev/null`, writable `/tmp`, etc. — so P2-1 is a prerequisite for
+   the research track's first acceptance test, not a polish item.
+
+> **Research-track dependency (see [VISION.md](VISION.md))**: R0 may run
+> in parallel with M2 (instrumentation is non-invasive). R1 starts **only
+> after M2 closes** — there is no point building a dynamic policy engine on
+> an OCI parser that silently ignores `linux.namespaces`.
 
 ### Milestone M3 — Depth where it matters
-1. P2-1: full `/dev`, `/tmp`, `/sys` setup.
-2. P2-2: cgroup v2 validation + controller enabling.
-3. P2-3/P2-4: content-addressed images + registry config blob fetch + streaming.
-4. P2-5: daemon persistence + logs + auth + exec endpoint.
+1. P2-2: cgroup v2 validation + controller enabling.
+2. P2-3/P2-4: content-addressed images + registry config blob fetch + streaming.
+3. P2-5: daemon persistence + logs + auth + exec endpoint.
 
 ### Milestone M4 — Polish
 1. P3-1 through P3-6.
 
-### Stretch (explicitly out of scope for v1.0)
-- rootless operation via `CLONE_NEWUSER` + uid mapping
+### Stretch (explicitly out of scope for v1.0 remediation track)
+- rootless operation via `CLONE_NEWUSER` + uid mapping (research-track R5)
 - cgroup namespace
-- UDP port mapping / hairpin NAT (only if bridge is retained)
+- UDP port mapping / hairpin NAT (only if bridge is retained — bridge was
+  removed in M1, so this is dormant)
 - multi-host anything
+
+> The research track (R0–R3 + stretch R4–R6) lives in
+> [VISION.md](VISION.md) and is not tracked here.
 
 ---
 
