@@ -1,8 +1,20 @@
 # Agent Guidelines for tinybox
 
+> **Read [PLAN.md](docs/PLAN.md) first.** It is the authoritative, line-referenced
+> audit of the current codebase (P0–P3 issues + remediation roadmap). The
+> per-phase status in docs/PLAN.md supersedes any "✅" in older docs: several
+> phases have open P0/P1 items and must not be considered complete until the
+> corresponding milestone in docs/PLAN.md is tagged.
+
 ## Project Overview
 
 tinybox is a from-scratch Rust implementation of a Linux sandbox runtime, similar to `runc` but simplified and focused on Agent workloads. It is built incrementally across 8 phases, each producing a runnable, verifiable deliverable.
+
+> **⚠️ Security status (2026-08-16): NOT a security boundary.** Four P0
+> isolation holes are open — most importantly the `--network bridge` path
+> mutates the host netns, and the seccomp allow-list contains escape
+> primitives. Do not confine untrusted workloads until docs/PLAN.md Milestone M1
+> is complete.
 
 ## Conventions
 
@@ -24,6 +36,9 @@ Prefer minimal dependencies. Approved crates:
 - `tokio` (async runtime for daemon mode)
 - `tracing` / `tracing-subscriber` (logging)
 - `libc` (raw FFI only when nix doesn't cover it)
+- `seccompiler` (seccomp BPF filter generation — used by Phase 5)
+- `tar` / `flate2` (image tarball extraction — used by Phase 9/10)
+- `reqwest` (Docker registry HTTP — used by Phase 10; blocking feature)
 
 Do NOT add dependencies without a clear reason. Avoid full-blown container runtimes, virtualization libraries, or OCI SDKs.
 
@@ -87,8 +102,10 @@ tinybox run --root /tmp/alpine-rootfs -- sh -c "echo hi > /t && cat /t"  # → "
 
 ### Phase 4
 ```bash
-tinybox run --mem-limit 64M -- sh -c "dd if=/dev/zero of=/dev/null bs=1M count=200"  # → OOM killed
+tinybox run --memory 64m -- sh -c "dd if=/dev/zero of=/dev/null bs=1M count=200"  # → OOM killed
 ```
+> Note: the flag is `--memory`/`-m` (not `--mem-limit`), and the suffix is
+> case-sensitive lowercase (`64m`, not `64M`).
 
 ### Phase 5
 ```bash
@@ -107,12 +124,22 @@ cat > /tmp/oci-bundle/config.json <<'EOF'
 EOF
 tinybox run --oci /tmp/oci-bundle   # → "hello-oci"
 ```
+> ⚠️ **P1-1 (open):** the `linux.namespaces`, `root.readonly`, `process.cwd`,
+> and `process.user` fields are currently **silently ignored**. tinybox always
+> creates the full namespace set regardless of the bundle config. The
+> acceptance test passes only because it doesn't assert namespace *subsets*.
 
 ### Phase 7
 ```bash
 tinybox run -- ping 8.8.8.8         # → network unreachable
 tinybox run --proxy http://127.0.0.1:8080 -- wget -q -O- http://example.com  # → succeeds
 ```
+> ⚠️ **P0-1 / P0-2 (open):** `--proxy` currently sets env vars only and does
+> **not** unshare `CLONE_NEWNET`, so the sandbox shares the host netns — the
+> `--proxy wget` acceptance passes because the host has network, not because
+> traffic is proxied. The `ping` acceptance only holds when **neither**
+> `--proxy` nor `--network` is passed. The `--network bridge` path
+> additionally mutates the host netns (see P0-1 in docs/PLAN.md).
 
 ### Phase 8
 ```bash
@@ -133,11 +160,21 @@ curl http://127.0.0.1:8080/metrics  # → Prometheus metrics
 - Do NOT use Docker, containerd, or runc libraries (this is a from-scratch project)
 - Do NOT add Windows/macOS support (Linux-only)
 
+> **Constraint violation in the tree (2026-08-16):** Phase 11 (`src/network.rs`)
+> implemented a bridge + veth + NAT networking path that **directly violates**
+> the "no TUN/TAP, no bridge" rule above, and does so unsafely (see P0-1 in
+> docs/PLAN.md). The decision to keep or remove it is recorded in the Decision Log
+> below; until M1 lands, treat `--network bridge` as broken and dangerous.
+
 ### What to prioritize
 - **Correctness**: The sandbox must actually isolate. Leaking processes to the host is a bug.
 - **Safety**: Default seccomp policy must prevent escape. `--dangerous` is opt-in.
 - **Measurability**: Every optimization must be backed by a benchmark number.
 - **Simplicity**: ~2000 lines total Rust. Favor readable code over clever abstractions.
+
+> **Safety status (2026-08-16):** the "default seccomp policy must prevent
+> escape" priority is **currently not met** — P0-3 (escape primitives in the
+> allow-list) and P0-4 (bounding set never cleared) are open.
 
 ## Decision Log
 
@@ -153,6 +190,28 @@ curl http://127.0.0.1:8080/metrics  # → Prometheus metrics
 - OCI support moved to Phase 6 (after core isolation works, before network)
 - Rationale: OCI config.json wraps all isolation features, so it should be added after they work individually
 - Network is Phase 7 because it's the most complex and can be developed independently
+
+### 2026-08-16: Codebase review and remediation plan
+- **Outcome**: A line-level audit of all 11 source files (~2004 LOC) produced
+  [PLAN.md](docs/PLAN.md) with 4 P0, 5 P1, 5 P2, and 6 P3 items.
+- **Network design contradiction**: Phase 11 (`src/network.rs`) implemented a
+  bridge + veth + NAT path that contradicts the 2026-08-02 "proxy-based, no
+  bridge" decision and the "no TUN/TAP, no bridge" constraint. It also leaks
+  to the host netns (P0-1). **Pending decision** (Milestone M1):
+  - **Option A (recommended)**: remove `network.rs` entirely; restore the
+    documented proxy-only design; `--proxy` gets a real `CLONE_NEWNET`
+    (loopback-only) + env vars.
+  - **Option B**: keep the bridge, fix the ordering bug, and update the
+    design docs to permit bridge networking as an opt-in feature.
+- **OCI support depth**: Phase 6 honors only `process.args`/`env` and
+  `root.path` — `linux.namespaces` etc. are silently dropped (P1-1). The
+  "core 10 fields" claim in this file is aspirational, not factual.
+- **Seccomp escape primitives**: `clone` (unrestricted), `open_by_handle_at`,
+  `process_vm_readv/writev`, `perf_event_open` are in the allow-list; the
+  bounding set is never cleared (P0-3, P0-4).
+- **Docs policy**: README and AGENTS.md now reflect real per-phase status
+  (✅/⚠️/❌) and point to docs/PLAN.md as the source of truth. A phase is "✅" only
+  when its acceptance criteria pass AND it has no open P0/P1 item.
 
 ## Related Projects
 

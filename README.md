@@ -2,9 +2,16 @@
 
 A minimal, secure sandbox runtime for running AI Agents in isolated environments, built from scratch in Rust.
 
-![Phase Progress](https://img.shields.io/badge/phase-13%2F8-blue)
-![Lines of Code](https://img.shields.io/badge/LOC-1254-orange)
+![Phase Progress](https://img.shields.io/badge/phase-13%2F8-yellow)
+![Lines of Code](https://img.shields.io/badge/LOC-2004-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
+![Status](https://img.shields.io/badge/status-NOT%20a%20security%20boundary-red)
+
+> ⚠️ **WARNING — not a security boundary (yet).** A line-level review on
+> 2026-08-16 found that the network stack leaks to the host and the seccomp
+> allow-list contains known escape primitives. Do **not** use tinybox to
+> confine untrusted workloads until the P0 items in [PLAN.md](docs/PLAN.md) are
+> resolved. See docs/PLAN.md for the full issue list and remediation roadmap.
 
 ## Motivation
 
@@ -20,23 +27,27 @@ The project covers all six directions of the Agent Infra JD:
 
 ## Current Status
 
-**Phase 13 of 8 completed** (1254 lines of Rust code)
+**13 phases implemented (2004 lines of Rust), but 4 P0 isolation holes are open.**
+See [PLAN.md](docs/PLAN.md) for the authoritative, line-referenced audit and
+remediation roadmap. Per-phase status uses ✅ works / ⚠️ partial / ❌ broken.
 
-### Completed Features
+### Feature Status (honest)
 
-- ✅ **Phase 1**: Project skeleton + CLI + subprocess execution
-- ✅ **Phase 2**: Namespace isolation (PID/mount/UTS)
-- ✅ **Phase 3**: Overlayfs rootfs + pivot_root
-- ✅ **Phase 4**: cgroup resource limits (CPU/memory/pids)
-- ✅ **Phase 5**: seccomp + capabilities hardening
-- ✅ **Phase 6**: OCI Bundle support (config.json parsing)
-- ✅ **Phase 7**: Network namespace + proxy environment
-- ✅ **Phase 8**: HTTP API + daemon mode + Prometheus metrics
-- ✅ **Phase 9**: Local image management (import/list/remove/run --image)
-- ✅ **Phase 10**: Docker Registry image pull
-- ✅ **Phase 11**: Network bridge + port mapping
-- ✅ **Phase 12**: Volume mounting (bind mounts)
-- ✅ **Phase 13**: Exec into running containers
+| Phase | Feature | Status | Notes |
+|-------|---------|--------|-------|
+| 1 | Project skeleton + CLI + subprocess execution | ✅ | — |
+| 2 | Namespace isolation (PID/mount/UTS) | ✅ | — |
+| 3 | Overlayfs rootfs + pivot_root | ⚠️ | no `/dev`, `/tmp`, `/sys`; OCI `readonly` ignored (P2-1) |
+| 4 | cgroup resource limits (CPU/memory/pids) | ⚠️ | no v2 validation, `swap.max` hardcoded, no controller enabling (P2-2) |
+| 5 | seccomp + capabilities hardening | ❌ | `clone`/`open_by_handle_at`/`process_vm_*` allowed; bounding set never cleared (P0-3, P0-4) |
+| 6 | OCI Bundle support (config.json parsing) | ❌ | only 3 of ~10 claimed fields honored; `linux.namespaces` silently dropped (P1-1) |
+| 7 | Network namespace + proxy environment | ❌ | `--proxy` is env-vars-only (no NEWNET); default-only path has no netns leak (P0-2) |
+| 8 | HTTP API + daemon mode + Prometheus metrics | ⚠️ | limited `CreateRequest`; failed sandboxes miscounted as completed (P1-3, P1-4, P2-5) |
+| 9 | Local image management (import/list/remove/run --image) | ⚠️ | no content addressing, no layering, no metadata (P2-3) |
+| 10 | Docker Registry image pull | ⚠️ | in-memory blobs (OOM risk); never fetches config blob; Docker Hub only (P2-4) |
+| 11 | Network bridge + port mapping | ❌ | **contradicts design** (AGENTS.md forbids bridge); `--network` mutates host netns (P0-1) |
+| 12 | Volume mounting (bind mounts) | ✅ | — |
+| 13 | Exec into running containers | ⚠️ | 23-line `nsenter` wrapper; missing `-i/-U/-C`, no TTY, no PID validation (P1-5) |
 
 ## Architecture
 
@@ -228,19 +239,58 @@ sudo ./scripts/test_phase10.sh
 |-------|---------|-------------|--------|
 | 1 | Project skeleton + CLI + subprocess execution | ~150 | ✅ |
 | 2 | Namespace isolation (PID/mount/UTS) | ~200 | ✅ |
-| 3 | Overlayfs rootfs + pivot_root | ~150 | ✅ |
-| 4 | cgroup resource limits (CPU/memory/pids) | ~200 | ✅ |
-| 5 | seccomp + capabilities hardening | ~250 | ✅ |
-| 6 | OCI Bundle support (config.json parsing) | ~350 | ✅ |
-| 7 | Network namespace + proxy environment | ~250 | ✅ |
-| 8 | HTTP API + daemon mode + Prometheus metrics | ~350 | ✅ |
-| 9 | Local image management (import/list/remove) | ~150 | ✅ |
-| 10 | Docker Registry image pull | ~150 | ✅ |
-| 11 | Network bridge + port mapping | ~200 | ✅ |
+| 3 | Overlayfs rootfs + pivot_root | ~150 | ⚠️ |
+| 4 | cgroup resource limits (CPU/memory/pids) | ~200 | ⚠️ |
+| 5 | seccomp + capabilities hardening | ~250 | ❌ |
+| 6 | OCI Bundle support (config.json parsing) | ~350 | ❌ |
+| 7 | Network namespace + proxy environment | ~250 | ❌ |
+| 8 | HTTP API + daemon mode + Prometheus metrics | ~350 | ⚠️ |
+| 9 | Local image management (import/list/remove) | ~150 | ⚠️ |
+| 10 | Docker Registry image pull | ~150 | ⚠️ |
+| 11 | Network bridge + port mapping | ~200 | ❌ |
 | 12 | Volume mounting (bind mounts) | ~50 | ✅ |
-| 13 | Exec into running containers | ~50 | ✅ |
+| 13 | Exec into running containers | ~50 | ⚠️ |
+
+Status: ✅ works · ⚠️ partial (open P1/P2) · ❌ broken (open P0 or fails acceptance).
+See [PLAN.md](docs/PLAN.md) for the per-phase open-item mapping.
 
 ## Known Issues
+
+> This section summarizes the open defects; see [PLAN.md](docs/PLAN.md) for the
+> full, line-referenced list with fixes and the remediation roadmap.
+
+### P0 — Isolation / Security (must fix before any untrusted use)
+- **`--network bridge` configures the host instead of the sandbox**
+  (`src/sandbox.rs:141-143`, `src/network.rs`). The bridge path also
+  contradicts AGENTS.md's "no TUN/TAP, no bridge" constraint.
+- **`--proxy` is not isolation**: only sets `HTTP_PROXY` env vars; the
+  sandbox shares the host netns, so any binary can bypass the proxy.
+- **seccomp allow-list has escape primitives**: `clone` (unrestricted flags),
+  `open_by_handle_at`, `process_vm_readv/writev`, `perf_event_open` are
+  allowed; `CAP_DAC_READ_SEARCH` is not dropped.
+- **Capability bounding set never cleared**: a setuid binary exec'd in the
+  sandbox re-acquires dropped caps on `execve`.
+
+### P1 — Correctness / Contradictions
+- **OCI support is shallow**: `linux.namespaces`, `root.readonly`, `mounts`,
+  `process.{cwd,user}` are all silently ignored — only `args`/`env`/`root.path`
+  are honored (3 of the claimed "core 10" fields).
+- **`ip`/`iptables` non-zero exit is silently treated as success** across
+  `network.rs` (moot if the bridge path is removed).
+- **daemon conflates failed and completed sandboxes**: `exit_code = result.ok()`
+  marks crashes as `completed`; `/metrics` overcounts.
+- **daemon `CreateRequest` cannot set cpus/volumes/ports/network/...** — the
+  API can't exercise most CLI features.
+- **`exec` is a 23-line `nsenter` wrapper**: missing `-i/-U/-C`, no TTY, no
+  validation that the PID is a tinybox sandbox.
+
+### P2 — Shallow Features
+- rootfs: no `/dev`, `/tmp` tmpfs, `/sys`; only `/proc` mounted.
+- cgroup: no v2 validation, no controller enabling, `swap.max` hardcoded to 0.
+- images: no content addressing, no layering, no metadata.
+- registry pull: entire layers loaded into RAM; config blob never fetched
+  (so pulled images have no default `Cmd`); no digest verification; Docker Hub only.
+- daemon: no persistence, no auth, no log/exec endpoints.
 
 ### WSL2 Limitations
 
