@@ -157,23 +157,34 @@ fn main() -> Result<()> {
             read_only,
             volumes,
         } => {
-            let (command, root, oci_env) = if let Some(bundle_path) = oci {
-                let bundle = oci::load_bundle(std::path::Path::new(&bundle_path))?;
-                (
-                    bundle.command,
-                    Some(bundle.rootfs.to_string_lossy().into_owned()),
-                    bundle.env,
-                )
-            } else if let Some(image_name) = image {
-                let path = image::resolve(&image_name)?;
-                (
-                    command,
-                    Some(path.to_string_lossy().into_owned()),
-                    Vec::new(),
-                )
-            } else {
-                (command, root, Vec::new())
-            };
+            let (command, root, oci_env, root_readonly, cwd, uid, gid, namespaces) =
+                if let Some(bundle_path) = oci {
+                    let bundle = oci::load_bundle(std::path::Path::new(&bundle_path))?;
+                    (
+                        bundle.command,
+                        Some(bundle.rootfs.to_string_lossy().into_owned()),
+                        bundle.env,
+                        bundle.root_readonly,
+                        bundle.cwd,
+                        bundle.uid,
+                        bundle.gid,
+                        bundle.namespaces,
+                    )
+                } else if let Some(image_name) = image {
+                    let path = image::resolve(&image_name)?;
+                    (
+                        command,
+                        Some(path.to_string_lossy().into_owned()),
+                        Vec::new(),
+                        read_only,
+                        None,
+                        0,
+                        0,
+                        None,
+                    )
+                } else {
+                    (command, root, Vec::new(), read_only, None, 0, 0, None)
+                };
             let memory_bytes = match memory {
                 Some(s) => Some(parse_memory(&s)?),
                 None => None,
@@ -182,7 +193,7 @@ fn main() -> Result<()> {
                 command,
                 hostname,
                 rootfs: root.map(std::path::PathBuf::from),
-                root_readonly: read_only,
+                root_readonly,
                 env: oci_env,
                 proxy,
                 volumes,
@@ -192,6 +203,10 @@ fn main() -> Result<()> {
                 cpu_period,
                 pids_limit,
                 dangerous,
+                namespaces,
+                cwd,
+                uid,
+                gid,
             };
             let code = run_sandbox(&config)?;
             std::process::exit(code);

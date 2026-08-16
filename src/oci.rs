@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 struct OciConfig {
     process: Option<OciProcess>,
     root: Option<OciRoot>,
+    linux: Option<OciLinux>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -14,17 +15,49 @@ struct OciProcess {
     args: Vec<String>,
     #[serde(default)]
     env: Vec<String>,
+    cwd: Option<String>,
+    user: Option<OciUser>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OciUser {
+    #[serde(default)]
+    uid: u32,
+    #[serde(default)]
+    gid: u32,
 }
 
 #[derive(Debug, Deserialize)]
 struct OciRoot {
     path: PathBuf,
+    #[serde(default)]
+    readonly: bool,
 }
 
+#[derive(Debug, Deserialize)]
+struct OciLinux {
+    #[serde(default)]
+    namespaces: Vec<OciNamespace>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OciNamespace {
+    #[serde(rename = "type")]
+    ns_type: String,
+}
+
+/// Which namespaces tinybox should unshare. `None` means "all of them"
+/// (tinybox's default, maximum isolation). `Some(set)` means honor only the
+/// listed namespace types (OCI semantics).
 pub struct OciBundle {
     pub command: Vec<String>,
     pub rootfs: PathBuf,
     pub env: Vec<String>,
+    pub root_readonly: bool,
+    pub cwd: Option<String>,
+    pub uid: u32,
+    pub gid: u32,
+    pub namespaces: Option<Vec<String>>,
 }
 
 pub fn load_bundle(bundle: &Path) -> Result<OciBundle> {
@@ -36,19 +69,40 @@ pub fn load_bundle(bundle: &Path) -> Result<OciBundle> {
     if process.args.is_empty() {
         anyhow::bail!("OCI process.args must not be empty");
     }
-    let root_path = config.root.context("OCI config missing root")?.path;
-    let rootfs = if root_path.is_absolute() {
-        root_path
+    let root = config.root.context("OCI config missing root")?;
+    let rootfs = if root.path.is_absolute() {
+        root.path
     } else {
-        bundle.join(root_path)
+        bundle.join(root.path)
     };
     if !rootfs.is_dir() {
         anyhow::bail!("OCI rootfs is not a directory: {}", rootfs.display());
     }
+    let (uid, gid) = match process.user {
+        Some(u) => (u.uid, u.gid),
+        None => (0, 0),
+    };
+    // P1-1: honor linux.namespaces. If the bundle lists any, tinybox unshares
+    // only those (OCI semantics); if absent, tinybox keeps its default of all
+    // namespaces (maximum isolation).
+    let namespaces = config
+        .linux
+        .and_then(|l| {
+            if l.namespaces.is_empty() {
+                None
+            } else {
+                Some(l.namespaces.into_iter().map(|n| n.ns_type).collect())
+            }
+        });
     Ok(OciBundle {
         command: process.args,
         rootfs,
         env: process.env,
+        root_readonly: root.readonly,
+        cwd: process.cwd,
+        uid,
+        gid,
+        namespaces,
     })
 }
 
@@ -71,5 +125,30 @@ mod tests {
         assert_eq!(bundle.command, vec!["sh"]);
         assert_eq!(bundle.env, vec!["A=B"]);
         assert_eq!(bundle.rootfs, dir.path().join("rootfs"));
+        assert!(!bundle.root_readonly);
+        assert_eq!(bundle.uid, 0);
+        assert_eq!(bundle.gid, 0);
+        assert!(bundle.namespaces.is_none()); // absent → default-all
+    }
+
+    #[test]
+    fn honors_readonly_cwd_user_and_namespaces() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("rootfs")).unwrap();
+        let mut file = fs::File::create(dir.path().join("config.json")).unwrap();
+        write!(
+            file,
+            r#"{{"process":{{"args":["sh"],"cwd":"/work","user":{{"uid":1000,"gid":1000}}}},"root":{{"path":"rootfs","readonly":true}},"linux":{{"namespaces":[{{"type":"pid"}},{{"type":"mount"}}]}}}}"#
+        )
+        .unwrap();
+        let bundle = load_bundle(dir.path()).unwrap();
+        assert!(bundle.root_readonly);
+        assert_eq!(bundle.cwd.as_deref(), Some("/work"));
+        assert_eq!(bundle.uid, 1000);
+        assert_eq!(bundle.gid, 1000);
+        assert_eq!(
+            bundle.namespaces,
+            Some(vec!["pid".to_string(), "mount".to_string()])
+        );
     }
 }

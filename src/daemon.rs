@@ -83,15 +83,19 @@ async fn create(
                 rootfs: Some(PathBuf::from(req.rootfs)),
                 root_readonly: false,
                 env: Vec::new(),
-            proxy: req.proxy,
-            volumes: Vec::new(),
-            memory: req.memory_limit_mb.map(|v| v * 1024 * 1024),
-            cpus: None,
-            cpu_quota: None,
-            cpu_period: None,
-            pids_limit: None,
-            dangerous: false,
-        };
+                proxy: req.proxy,
+                volumes: Vec::new(),
+                memory: req.memory_limit_mb.map(|v| v * 1024 * 1024),
+                cpus: None,
+                cpu_quota: None,
+                cpu_period: None,
+                pids_limit: None,
+                dangerous: false,
+                namespaces: None,
+                cwd: None,
+                uid: 0,
+                gid: 0,
+            };
         let state_for_pid = state_clone.clone();
         let id_for_pid = id_clone.clone();
         let result = run_sandbox_with_pid(&config, move |pid| {

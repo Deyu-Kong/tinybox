@@ -3,7 +3,9 @@ use nix::mount::{mount, MsFlags};
 use nix::sched::{unshare, CloneFlags};
 use nix::sys::signal::Signal;
 use nix::sys::wait::{waitpid, WaitStatus};
-use nix::unistd::{close, execvp, execvpe, fork, pipe, read, sethostname, ForkResult};
+use nix::unistd::{
+    chdir, close, execvp, execvpe, fork, pipe, read, setgid, sethostname, setuid, ForkResult,
+};
 use std::ffi::CString;
 use std::os::unix::io::{BorrowedFd, IntoRawFd};
 use std::path::PathBuf;
@@ -26,6 +28,13 @@ pub struct SandboxConfig {
     pub cpu_period: Option<u64>,
     pub pids_limit: Option<u64>,
     pub dangerous: bool,
+    /// None = unshare all (tinybox default, max isolation). Some(set) = honor
+    /// only the listed OCI namespace types ("pid"/"mount"/"uts"/"net"/"ipc"/
+    /// "user"/"cgroup").
+    pub namespaces: Option<Vec<String>>,
+    pub cwd: Option<String>,
+    pub uid: u32,
+    pub gid: u32,
 }
 
 pub fn run_sandbox(config: &SandboxConfig) -> Result<i32> {
@@ -111,16 +120,56 @@ where
 }
 
 fn child_main(config: &SandboxConfig, program: &CString, args: &[CString]) -> Result<()> {
-    // SAFETY: always unshare CLONE_NEWNET so the sandbox gets a loopback-only
-    // netns. `--proxy` only adds HTTP_PROXY env vars on top of this isolation;
-    // it no longer relies on env vars alone (P0-2). The bridge/veth path was
-    // removed (P0-1 Option A) — it contradicted the documented proxy-only
-    // design and leaked configuration onto the host netns.
+    // SAFETY: unshare the requested namespace set. `config.namespaces == None`
+    // is tinybox's default — the original four (NEWPID/NEWNS/NEWUTS/NEWNET),
+    // maximum isolation WITHOUT NEWUSER (uid/gid mapping is R5/rootless).
+    // When an OCI bundle lists a namespace subset (P1-1), honor only those —
+    // that is OCI semantics (the bundle author is responsible for the right
+    // set). `CLONE_NEWUSER` is intentionally never unshared here: doing so
+    // without writing uid_map leaves the process unmapped and unable to
+    // mount; proper rootless user-ns is deferred to R5.
     let mut flags = CloneFlags::empty();
-    flags.insert(CloneFlags::CLONE_NEWPID);
-    flags.insert(CloneFlags::CLONE_NEWNS);
-    flags.insert(CloneFlags::CLONE_NEWUTS);
-    flags.insert(CloneFlags::CLONE_NEWNET);
+    match &config.namespaces {
+        None => {
+            flags.insert(
+                CloneFlags::CLONE_NEWPID
+                    | CloneFlags::CLONE_NEWNS
+                    | CloneFlags::CLONE_NEWUTS
+                    | CloneFlags::CLONE_NEWNET,
+            );
+        }
+        Some(ns) => {
+            let want = |t: &str| ns.iter().any(|s| s.eq_ignore_ascii_case(t));
+            if want("pid") {
+                flags.insert(CloneFlags::CLONE_NEWPID);
+            }
+            if want("mount") || want("mnt") {
+                flags.insert(CloneFlags::CLONE_NEWNS);
+            }
+            if want("uts") {
+                flags.insert(CloneFlags::CLONE_NEWUTS);
+            }
+            if want("net") || want("network") {
+                flags.insert(CloneFlags::CLONE_NEWNET);
+            }
+            if want("ipc") {
+                flags.insert(CloneFlags::CLONE_NEWIPC);
+            }
+            if want("cgroup") {
+                flags.insert(CloneFlags::CLONE_NEWCGROUP);
+            }
+            if flags.is_empty() {
+                // No recognizable namespaces requested — fall back to the safe
+                // default rather than running with zero isolation.
+                flags.insert(
+                    CloneFlags::CLONE_NEWPID
+                        | CloneFlags::CLONE_NEWNS
+                        | CloneFlags::CLONE_NEWUTS
+                        | CloneFlags::CLONE_NEWNET,
+                );
+            }
+        }
+    }
 
     unshare(flags)?;
 
@@ -169,8 +218,21 @@ fn child_main(config: &SandboxConfig, program: &CString, args: &[CString]) -> Re
                 mount_proc()?;
             }
             mount_volumes(&config.volumes)?;
+            // P1-1: honor OCI process.user — set gid then uid while we still
+            // hold CAP_SETUID/CAP_SETGID (caps dropped below). gid must be set
+            // before uid per setuid(2) rules.
+            if config.gid != 0 {
+                setgid(nix::unistd::Gid::from_raw(config.gid))?;
+            }
+            if config.uid != 0 {
+                setuid(nix::unistd::Uid::from_raw(config.uid))?;
+            }
             drop_capabilities(config.dangerous)?;
             apply_seccomp_filter(config.dangerous)?;
+            // P1-1: honor OCI process.cwd.
+            if let Some(ref cwd) = config.cwd {
+                chdir(cwd.as_str())?;
+            }
             let env_values = effective_environment(config);
             if env_values.is_empty() {
                 execvp(program, args)?;
@@ -312,6 +374,10 @@ mod tests {
             cpu_period: None,
             pids_limit: None,
             dangerous: false,
+            namespaces: None,
+            cwd: None,
+            uid: 0,
+            gid: 0,
         };
         assert!(run_sandbox(&config).is_err());
     }

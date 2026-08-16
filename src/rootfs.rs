@@ -52,19 +52,9 @@ impl RootfsConfig {
         )
         .context("failed to mount overlayfs")?;
 
-        // P2-1: honor OCI root.readonly by making the rootfs overlay read-only.
-        // /dev, /tmp, /sys, /proc are separate mountpoints set up below, so
-        // they remain writable regardless of the root ro flag.
-        if self.readonly {
-            mount(
-                None::<&str>,
-                &merged,
-                None::<&str>,
-                MsFlags::MS_REMOUNT | MsFlags::MS_RDONLY,
-                None::<&str>,
-            )
-            .context("failed to remount overlay read-only")?;
-        }
+        // NOTE: the read-only remount is deferred to `pivot()` — doing it
+        // here would make `merged` read-only before `pivot()` creates
+        // `old_root` inside it.
 
         Ok(())
     }
@@ -193,6 +183,20 @@ impl RootfsConfig {
 
         umount2("/old_root", MntFlags::MNT_DETACH).context("failed to umount old_root")?;
         fs::remove_dir("/old_root").ok();
+
+        // P2-1: honor OCI root.readonly — remount the new root read-only AFTER
+        // pivot. /dev, /tmp, /sys, /proc are separate mountpoints (set up in
+        // setup_special_fs) and remain writable regardless.
+        if self.readonly {
+            mount(
+                None::<&str>,
+                "/",
+                None::<&str>,
+                MsFlags::MS_REMOUNT | MsFlags::MS_RDONLY,
+                None::<&str>,
+            )
+            .context("failed to remount root read-only")?;
+        }
 
         Ok(())
     }
