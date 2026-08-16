@@ -79,6 +79,18 @@ where
         None
     };
 
+    // Fail fast: validate the rootfs BEFORE forking, so a bad rootfs surfaces
+    // as a runtime error (Err → daemon "failed" status) rather than a child
+    // exit code 1 (which would be mislabeled "completed"). P1-3.
+    if let Some(ref rootfs_path) = config.rootfs {
+        if !rootfs_path.exists() {
+            bail!("rootfs path does not exist: {:?}", rootfs_path);
+        }
+        if !rootfs_path.is_dir() {
+            bail!("rootfs path is not a directory: {:?}", rootfs_path);
+        }
+    }
+
     let (read_fd, write_fd) = pipe().context("failed to create pipe")?;
     let read_fd = read_fd.into_raw_fd();
     let write_fd = write_fd.into_raw_fd();

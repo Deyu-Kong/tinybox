@@ -31,14 +31,34 @@ struct Sandbox {
     status: String,
     exit_code: Option<i32>,
     pid: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct CreateRequest {
     rootfs: String,
     command: Vec<String>,
+    #[serde(default)]
     memory_limit_mb: Option<u64>,
+    #[serde(default)]
+    cpus: Option<f64>,
+    #[serde(default)]
+    pids_limit: Option<u64>,
+    #[serde(default)]
+    volumes: Vec<String>,
+    #[serde(default)]
+    hostname: Option<String>,
+    #[serde(default)]
+    env: Vec<String>,
+    #[serde(default)]
+    root_readonly: Option<bool>,
+    #[serde(default)]
     proxy: Option<String>,
+    // P1-4: `dangerous` is accepted only so it can be explicitly rejected over
+    // the API — disabling seccomp/caps remotely is a footgun.
+    #[serde(default)]
+    dangerous: Option<bool>,
 }
 
 pub async fn serve(listen: SocketAddr) -> anyhow::Result<()> {
@@ -66,12 +86,20 @@ async fn create(
             Json(serde_json::json!({"error":"command must not be empty"})),
         );
     }
+    // P1-4: never allow remotely disabling seccomp/caps.
+    if req.dangerous.unwrap_or(false) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error":"dangerous mode cannot be enabled over the API"})),
+        );
+    }
     let id = format!("sb-{}", state.next_id.fetch_add(1, Ordering::Relaxed));
     let entry = Sandbox {
         id: id.clone(),
         status: "running".into(),
         exit_code: None,
         pid: None,
+        error: None,
     };
     state.sandboxes.lock().unwrap().insert(id.clone(), entry);
     let state_clone = state.clone();
@@ -79,23 +107,23 @@ async fn create(
     tokio::task::spawn_blocking(move || {
         let config = SandboxConfig {
             command: req.command,
-            hostname: None,
-                rootfs: Some(PathBuf::from(req.rootfs)),
-                root_readonly: false,
-                env: Vec::new(),
-                proxy: req.proxy,
-                volumes: Vec::new(),
-                memory: req.memory_limit_mb.map(|v| v * 1024 * 1024),
-                cpus: None,
-                cpu_quota: None,
-                cpu_period: None,
-                pids_limit: None,
-                dangerous: false,
-                namespaces: None,
-                cwd: None,
-                uid: 0,
-                gid: 0,
-            };
+            hostname: req.hostname,
+            rootfs: Some(PathBuf::from(req.rootfs)),
+            root_readonly: req.root_readonly.unwrap_or(false),
+            env: req.env,
+            proxy: req.proxy,
+            volumes: req.volumes,
+            memory: req.memory_limit_mb.map(|v| v * 1024 * 1024),
+            cpus: req.cpus,
+            cpu_quota: None,
+            cpu_period: None,
+            pids_limit: req.pids_limit,
+            dangerous: false,
+            namespaces: None,
+            cwd: None,
+            uid: 0,
+            gid: 0,
+        };
         let state_for_pid = state_clone.clone();
         let id_for_pid = id_clone.clone();
         let result = run_sandbox_with_pid(&config, move |pid| {
@@ -103,9 +131,18 @@ async fn create(
                 sb.pid = Some(pid.as_raw());
             }
         });
+        // P1-3: distinguish completed vs failed.
         if let Some(sb) = state_clone.sandboxes.lock().unwrap().get_mut(&id_clone) {
-            sb.status = "completed".into();
-            sb.exit_code = result.ok();
+            match result {
+                Ok(code) => {
+                    sb.status = "completed".into();
+                    sb.exit_code = Some(code);
+                }
+                Err(e) => {
+                    sb.status = "failed".into();
+                    sb.error = Some(format!("{e:#}"));
+                }
+            }
         }
     });
     (
@@ -126,7 +163,7 @@ async fn get_one(Path(id): Path<String>, State(state): State<AppState>) -> impl 
 async fn remove(Path(id): Path<String>, State(state): State<AppState>) -> StatusCode {
     let mut sandboxes = state.sandboxes.lock().unwrap();
     if let Some(sb) = sandboxes.get(&id) {
-        if sb.status == "running" {
+        if sb.status == "running" || sb.status == "failed" {
             if let Some(pid) = sb.pid {
                 let _ = kill(Pid::from_raw(pid), Signal::SIGKILL);
             }
@@ -140,10 +177,19 @@ async fn remove(Path(id): Path<String>, State(state): State<AppState>) -> Status
 async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
     let sandboxes = state.sandboxes.lock().unwrap();
     let total = sandboxes.len();
-    let running = sandboxes.values().filter(|s| s.status == "running").count();
+    let running = sandboxes
+        .values()
+        .filter(|s| s.status == "running")
+        .count();
+    // P1-3: count completed and failed explicitly — previously failed
+    // sandboxes were miscounted as "completed" (total - running).
+    let completed = sandboxes
+        .values()
+        .filter(|s| s.status == "completed")
+        .count();
+    let failed = sandboxes.values().filter(|s| s.status == "failed").count();
     let body = format!(
-        "# HELP tinybox_sandboxes_total Total sandboxes created\n# TYPE tinybox_sandboxes_total counter\ntinybox_sandboxes_total {total}\n# HELP tinybox_sandboxes_running Currently running sandboxes\n# TYPE tinybox_sandboxes_running gauge\ntinybox_sandboxes_running {running}\n# HELP tinybox_sandboxes_completed Completed sandboxes\n# TYPE tinybox_sandboxes_completed gauge\ntinybox_sandboxes_completed {}\n",
-        total - running
+        "# HELP tinybox_sandboxes_total Total sandboxes created\n# TYPE tinybox_sandboxes_total counter\ntinybox_sandboxes_total {total}\n# HELP tinybox_sandboxes_running Currently running sandboxes\n# TYPE tinybox_sandboxes_running gauge\ntinybox_sandboxes_running {running}\n# HELP tinybox_sandboxes_completed Completed sandboxes\n# TYPE tinybox_sandboxes_completed gauge\ntinybox_sandboxes_completed {completed}\n# HELP tinybox_sandboxes_failed Failed sandboxes\n# TYPE tinybox_sandboxes_failed gauge\ntinybox_sandboxes_failed {failed}\n"
     );
     ([(CONTENT_TYPE, "text/plain; version=0.0.4")], body)
 }
