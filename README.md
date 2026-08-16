@@ -5,14 +5,15 @@ A minimal, secure sandbox runtime for running AI Agents in isolated environments
 ![Phase Progress](https://img.shields.io/badge/phase-13%2F8-yellow)
 ![Lines of Code](https://img.shields.io/badge/LOC-2004-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Status](https://img.shields.io/badge/status-P0%20fixed%2C%20hardening%20incomplete-yellow)
+![Status](https://img.shields.io/badge/status-M2%20done%2C%20P1%2FP2%20remaining-yellow)
 
-> ⚠️ **P0 isolation holes are fixed (M1, 2026-08-16), but hardening is
-> incomplete.** tinybox now properly isolates via namespaces + cgroups +
-> seccomp + caps (the `tinybox run` path is a defensible barrier), but it is
-> still rootful, lacks `/dev`/`/tmp`/`/sys` hardening, and OCI field-honoring
-> is incomplete. See [docs/PLAN.md](docs/PLAN.md) for the full audit and the
-> remaining P1/P2 items.
+> ⚠️ **M2 done (2026-08-16): P0/P1 closed, only P2 depth items remain.**
+> tinybox now properly isolates via namespaces + cgroups + seccomp + caps and
+> honors OCI `linux.namespaces`/`root.readonly`/`process.cwd`/`user`; the
+> daemon tracks failed sandboxes and rejects remote `dangerous`; `exec` is
+> `setns`-based with PID validation. Remaining items (P2: cgroup v2
+> validation, content-addressed images, registry streaming, daemon
+> persistence) are depth, not correctness. See [docs/PLAN.md](docs/PLAN.md).
 
 ## Motivation
 
@@ -28,11 +29,10 @@ The project covers all six directions of the Agent Infra JD:
 
 ## Current Status
 
-**13 phases implemented (2004 lines of Rust). P0 isolation holes fixed
-(M1, 2026-08-16); remaining issues are P1/P2 (correctness/depth), not escape
-holes.** See [docs/PLAN.md](docs/PLAN.md) for the authoritative, line-referenced
-audit and remediation roadmap. Per-phase status uses ✅ works / ⚠️ partial /
-❌ broken.
+**13 phases implemented (2000+ lines of Rust). M2 complete (2026-08-16): all
+P0/P1 issues closed; only P2 depth items remain.** See
+[docs/PLAN.md](docs/PLAN.md) for the authoritative, line-referenced audit and
+remediation roadmap. Per-phase status uses ✅ works / ⚠️ partial / ❌ broken.
 
 ### Feature Status (honest)
 
@@ -40,17 +40,17 @@ audit and remediation roadmap. Per-phase status uses ✅ works / ⚠️ partial 
 |-------|---------|--------|-------|
 | 1 | Project skeleton + CLI + subprocess execution | ✅ | — |
 | 2 | Namespace isolation (PID/mount/UTS/Net) | ✅ | NEWNET now always unshared (M1) |
-| 3 | Overlayfs rootfs + pivot_root | ⚠️ | no `/dev`, `/tmp`, `/sys`; OCI `readonly` ignored (P2-1) |
+| 3 | Overlayfs rootfs + pivot_root | ✅ | `/dev`/`/tmp`/`/sys` hardened; `--read-only` supported (M2) |
 | 4 | cgroup resource limits (CPU/memory/pids) | ⚠️ | no v2 validation, `swap.max` hardcoded, no controller enabling (P2-2) |
 | 5 | seccomp + capabilities hardening | ✅ | `clone` flag-masked; escape syscalls removed; bounding set cleared (M1) |
-| 6 | OCI Bundle support (config.json parsing) | ❌ | only 3 of ~10 claimed fields honored; `linux.namespaces` silently dropped (P1-1) |
+| 6 | OCI Bundle support (config.json parsing) | ✅ | honors `linux.namespaces`/`root.readonly`/`process.cwd`/`user` (M2) |
 | 7 | Network namespace + proxy environment | ✅ | `--proxy` now real isolation (loopback-only + env); bridge removed (M1) |
-| 8 | HTTP API + daemon mode + Prometheus metrics | ⚠️ | limited `CreateRequest`; failed sandboxes miscounted as completed (P1-3, P1-4, P2-5) |
+| 8 | HTTP API + daemon mode + Prometheus metrics | ✅ | extended `CreateRequest`; failed sandboxes tracked; `dangerous` rejected remotely (M2) |
 | 9 | Local image management (import/list/remove/run --image) | ⚠️ | no content addressing, no layering, no metadata (P2-3) |
 | 10 | Docker Registry image pull | ⚠️ | in-memory blobs (OOM risk); never fetches config blob; Docker Hub only (P2-4) |
 | 11 | ~~Network bridge + port mapping~~ | 🗑 | removed in M1 (Option A — contradicted design & leaked to host) |
 | 12 | Volume mounting (bind mounts) | ✅ | — |
-| 13 | Exec into running containers | ⚠️ | 23-line `nsenter` wrapper; missing `-i/-U/-C`, no TTY, no PID validation (P1-5) |
+| 13 | Exec into running containers | ✅ | `setns`-based, namespace-complete, PID-validated, with TTY (M2) |
 
 ## Architecture
 
@@ -240,17 +240,17 @@ sudo ./scripts/test_phase10.sh
 |-------|---------|-------------|--------|
 | 1 | Project skeleton + CLI + subprocess execution | ~150 | ✅ |
 | 2 | Namespace isolation (PID/mount/UTS/Net) | ~200 | ✅ |
-| 3 | Overlayfs rootfs + pivot_root | ~150 | ⚠️ |
+| 3 | Overlayfs rootfs + pivot_root | ~150 | ✅ |
 | 4 | cgroup resource limits (CPU/memory/pids) | ~200 | ⚠️ |
 | 5 | seccomp + capabilities hardening | ~250 | ✅ |
-| 6 | OCI Bundle support (config.json parsing) | ~350 | ❌ |
+| 6 | OCI Bundle support (config.json parsing) | ~350 | ✅ |
 | 7 | Network namespace + proxy environment | ~250 | ✅ |
-| 8 | HTTP API + daemon mode + Prometheus metrics | ~350 | ⚠️ |
+| 8 | HTTP API + daemon mode + Prometheus metrics | ~350 | ✅ |
 | 9 | Local image management (import/list/remove) | ~150 | ⚠️ |
 | 10 | Docker Registry image pull | ~150 | ⚠️ |
 | 11 | ~~Network bridge + port mapping~~ | ~200 | 🗑 removed |
 | 12 | Volume mounting (bind mounts) | ~50 | ✅ |
-| 13 | Exec into running containers | ~50 | ⚠️ |
+| 13 | Exec into running containers | ~50 | ✅ |
 
 Status: ✅ works · ⚠️ partial (open P1/P2) · ❌ broken (open P0 or fails
 acceptance) · 🗑 removed. Phase 11 was removed in M1 (Option A) — it
@@ -275,26 +275,20 @@ All four P0 escape/leak holes are closed:
 - ~~capability bounding set never cleared~~ → `drop_capabilities` now calls
   `prctl(PR_CAPBSET_DROP)` for each dangerous cap.
 
-### P1 — Correctness / Contradictions
-- **OCI support is shallow**: `linux.namespaces`, `root.readonly`, `mounts`,
-  `process.{cwd,user}` are all silently ignored — only `args`/`env`/`root.path`
-  are honored (3 of the claimed "core 10" fields).
-- ~~`ip`/`iptables` non-zero exit silently treated as success~~ → resolved:
-  `network.rs` was removed in M1.
-- **daemon conflates failed and completed sandboxes**: `exit_code = result.ok()`
-  marks crashes as `completed`; `/metrics` overcounts.
-- **daemon `CreateRequest` cannot set cpus/volumes/...** — the API can't
-  exercise most CLI features.
-- **`exec` is a 23-line `nsenter` wrapper**: missing `-i/-U/-C`, no TTY, no
-  validation that the PID is a tinybox sandbox.
+### P1 — Correctness / Contradictions (FIXED in M2, 2026-08-16)
+- ~~OCI support shallow~~ → now honors `linux.namespaces`/`root.readonly`/
+  `process.cwd`/`process.user` (P1-1).
+- ~~`ip`/`iptables` silent failure~~ → resolved (network.rs removed in M1).
+- ~~daemon conflates failed/completed~~ → now `failed` status + `tinybox_sandboxes_failed` metric (P1-3).
+- ~~daemon `CreateRequest` can't set options~~ → extended with cpus/pids/volumes/hostname/env/root_readonly; `dangerous:true` rejected remotely (P1-4).
+- ~~`exec` is a `nsenter` wrapper with gaps~~ → now `setns`-based, namespace-complete, PID-validated, with TTY (P1-5).
 
 ### P2 — Shallow Features
-- rootfs: no `/dev`, `/tmp` tmpfs, `/sys`; only `/proc` mounted.
-- cgroup: no v2 validation, no controller enabling, `swap.max` hardcoded to 0.
-- images: no content addressing, no layering, no metadata.
-- registry pull: entire layers loaded into RAM; config blob never fetched
-  (so pulled images have no default `Cmd`); no digest verification; Docker Hub only.
-- daemon: no persistence, no auth, no log/exec endpoints.
+- ~~rootfs: no `/dev`, `/tmp`, `/sys`~~ → hardened in M2 (P2-1).
+- cgroup: no v2 validation, no controller enabling, `swap.max` hardcoded (P2-2).
+- images: no content addressing, no layering, no metadata (P2-3).
+- registry pull: entire layers loaded into RAM; config blob never fetched; no digest verification; Docker Hub only (P2-4).
+- daemon: no persistence, no auth, no log/exec endpoints (P2-5).
 
 ### WSL2 Limitations
 

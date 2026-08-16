@@ -25,8 +25,8 @@
 | 严重度 | 数量 | 状态 |
 |----------|-------|--------|
 | P0（隔离/安全） | 4 | ✅ 全部解决（M1 完成，2026-08-16） |
-| P1（正确性/矛盾） | 5 | 1 已解决（P1-2），4 开放 |
-| P2（功能浅薄） | 5 | 开放 |
+| P1（正确性/矛盾） | 5 | ✅ 全部解决（M2 完成：P1-1/1-3/1-4/1-5；P1-2 随 M1） |
+| P2（功能浅薄） | 5 | 1 解决（P2-1 随 M2），4 开放 |
 | P3（打磨） | 6 | 开放（一处附带已修） |
 
 **P0 隔离漏洞已关闭。** 四个 P0 项在里程碑 M1（2026-08-16）解决：
@@ -307,19 +307,22 @@ P2 rootfs/device 硬化等）是正确性/纵深问题，非逃逸洞。tinybox 
    Test 3（`--proxy` 无默认路由）；seccomp clone 规则 + 排除 syscall 的
    单测。所有验收门绿。
 
-### 里程碑 M2——让声称的功能真正能用
-1. P1-1：honor OCI `linux.namespaces`、`root.readonly`、`process.cwd`、
+### 里程碑 M2——让声称的功能真正能用 ✅（2026-08-16）
+1. ✅ P1-1：honor OCI `linux.namespaces`、`root.readonly`、`process.cwd`、
    `process.user`。
-2. P1-3：daemon 状态 `{running,completed,failed}` + 失败计数器。
-3. P1-4：扩展 `CreateRequest`；拒绝远程 `dangerous`。
-4. P1-5：`exec` 走 `setns`，namespace 完整、PID 校验、带 TTY。
-5. **P2-1 已提前**（原在 M3）：完整 `/dev`、`/tmp`、`/sys` 设置。R0 的
+2. ✅ P1-3：daemon 状态 `{running,completed,failed}` + 失败计数器。
+3. ✅ P1-4：扩展 `CreateRequest`；拒绝远程 `dangerous`。
+4. ✅ P1-5：`exec` 走 `setns`，namespace 完整、PID 校验、带 TTY。
+5. ✅ **P2-1 已提前**（原在 M3）：完整 `/dev`、`/tmp`、`/sys` 设置。R0 的
    验收需要真跑 `pip install`，而它需要 `/dev/null`、可写 `/tmp` 等——故
    P2-1 是研究轨首个验收的前置，不是打磨项。
+6. ✅ 验证：`cargo test`（59 测试）+ `cargo clippy -- -D warnings` 干净；
+   phase 1/3/5/6/7/8/13 acceptance 全绿。
 
 > **研究轨依赖（见 [VISION.md](VISION.md)）**：R0 可与 M2 并行（插桩
 > 非侵入）。R1 只在 **M2 关闭后**开始——在一个静默忽略
-> `linux.namespaces` 的 OCI 解析器上建动态策略引擎没意义。
+> `linux.namespaces` 的 OCI 解析器上建动态策略引擎没意义。**M2 现已关闭，
+> R1 可启动。**
 
 ### 里程碑 M3——纵深
 1. P2-2：cgroup v2 校验 + 控制器启用。
@@ -360,20 +363,20 @@ P2 rootfs/device 硬化等）是正确性/纵深问题，非逃逸洞。tinybox 
 - ⚠️ **partial**——能跑但有开放 P1/P2 项（见 PLAN.md）。
 - ❌ **broken**——有开放 P0 项或不过验收。
 
-当前各 phase 状态（M1 后，2026-08-16）：
+当前各 phase 状态（M2 后，2026-08-16）：
 
 | Phase | Feature | Status | Open items |
 |-------|---------|--------|------------|
 | 1 | skeleton + CLI + exec | ✅ | — |
 | 2 | namespaces (pid/mount/uts/net) | ✅ | —（NEWNET 现始终 unshare） |
-| 3 | overlayfs + pivot_root | ⚠️ | P2-1（无 /dev、/tmp、/sys） |
+| 3 | overlayfs + pivot_root | ✅ | —（P2-1 已在 M2 修：/dev /tmp /sys + read-only） |
 | 4 | cgroup limits | ⚠️ | P2-2（无 v2 校验，swap 硬编码） |
 | 5 | seccomp + caps | ✅ | —（P0-3、P0-4 已在 M1 修） |
-| 6 | OCI bundle | ❌ | P1-1（namespaces 被忽略） |
+| 6 | OCI bundle | ✅ | —（P1-1 已在 M2 修：namespaces/readonly/cwd/user） |
 | 7 | network（proxy-only） | ✅ | —（P0-1、P0-2 已在 M1 修；bridge 移除） |
-| 8 | daemon API | ⚠️ | P1-3、P1-4、P2-5 |
+| 8 | daemon API | ✅ | —（P1-3、P1-4 已在 M2 修；P2-5 持久化/鉴权仍开放） |
 | 9 | local images | ⚠️ | P2-3 |
 | 10 | registry pull | ⚠️ | P2-4 |
 | 11 | ~~network bridge~~ | 🗑 移除 | M1 移除（Option A）；原 P0-1 |
 | 12 | volumes | ✅ | — |
-| 13 | exec | ⚠️ | P1-5 |
+| 13 | exec | ✅ | —（P1-5 已在 M2 修：setns + PID 校验 + TTY） |

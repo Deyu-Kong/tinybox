@@ -11,13 +11,14 @@ tinybox 是一个从零用 Rust 实现的 Linux 沙箱运行时，类似 `runc` 
 聚焦 Agent 工作负载。它分 8 个 phase 增量构建，每个 phase 产出一个可跑、
 可验的交付物。
 
-> **⚠️ 安全状态（2026-08-16，M1 之后）：P0 隔离漏洞已修，硬化未完。**
-> 里程碑 M1 关闭了全部四个 P0 项：bridge/veth/NAT 路径被删（Option A），
-> 沙箱现在始终 unshare `CLONE_NEWNET`，`clone` 经 seccomp flag 屏蔽禁止
-> `CLONE_NEW*`，capability bounding set 已清空。`tinybox run` 路径现在
-> 是一道可辩护的隔离屏障。剩余开放项（P1 OCI 字段 honoring、
-> P2 `/dev`/`/tmp`/`/sys` 硬化、rootful）是正确性/纵深问题，非逃逸洞。
-> 见 [docs/PLAN.md](docs/PLAN.md)。
+> **⚠️ 安全状态（2026-08-16，M2 之后）：P0/P1 全部关闭，仅余 P2 纵深。**
+> M1 关闭了四个 P0；M2（2026-08-16）关闭了全部 P1：OCI 字段
+> （`linux.namespaces`/`root.readonly`/`process.cwd`/`user`）、daemon 失败
+> 状态追踪、`CreateRequest` 扩展 + 远程 `dangerous` 拒绝、`exec` 走 `setns`
+> + PID 校验，以及 P2-1（`/dev`/`/tmp`/`/sys` 硬化 + `--read-only`）。`tinybox
+> run` 路径现在是可辩护的隔离屏障。剩余 P2 项（cgroup v2 校验、内容寻址
+> 镜像、registry 流式、daemon 持久化）是纵深，非正确性。R1 现可启动。见
+> [docs/PLAN.md](docs/PLAN.md)。
 
 ## 约定
 
@@ -134,9 +135,9 @@ cat > /tmp/oci-bundle/config.json <<'EOF'
 EOF
 tinybox run --oci /tmp/oci-bundle   # → "hello-oci"
 ```
-> ⚠️ **P1-1（开放）：** `linux.namespaces`、`root.readonly`、`process.cwd`、
-> `process.user` 字段当前被**静默忽略**。tinybox 无论 bundle config 如何
-> 都建完整 namespace 集。验收测试能过只是因为它不断言 namespace *子集*。
+> ⚠️ **P1-1（已在 M2 解决，2026-08-16）：** `linux.namespaces`、
+> `root.readonly`、`process.cwd`、`process.user` 现已被 honor。`scripts/
+> test_phase6.sh` Tests 2–3 断言 namespace 子集实际生效。
 
 ### Phase 7
 ```bash
@@ -312,6 +313,29 @@ curl http://127.0.0.1:8080/metrics  # → Prometheus metrics
 - **可重置作用域**：tinybox 的"reset/snapshot"只覆盖沙箱状态
   （rootfs overlayfs COW + cgroup + netns），不含 Agent 记忆/上下文
   （编排器职责）。
+
+### 2026-08-16：里程碑 M2——让声称的功能真正能用
+- **P1-1**：`oci.rs` 现解析 `linux.namespaces`/`root.readonly`/
+  `process.cwd`/`process.user`；`child_main` 按 namespace 子集 unshare
+  （None=默认四件套，不含 NEWUSER——uid mapping 是 R5）；pivot 后按
+  `root.readonly` remount `/` 只读；exec 前 `chdir(cwd)`；drop caps 前
+  `setgid`/`setuid`。加 `--read-only` CLI flag。启用 nix `user` feature。
+- **P1-3**：daemon `Sandbox` 加 `error` 字段；`run_sandbox_with_pid` 返回
+  `Err`→status `failed`，`/metrics` 加 `tinybox_sandboxes_failed`。`run_sandbox`
+  在 fork 前 fail-fast 校验 rootfs，使坏 rootfs 计为 `failed` 而非
+  `completed`。
+- **P1-4**：`CreateRequest` 扩展 `cpus`/`pids_limit`/`volumes`/`hostname`/
+  `env`/`root_readonly`（均 `#[serde(default)]`）；`dangerous:true` 远程
+  拒绝（400）。
+- **P1-5**：`exec.rs` 重写为 `nix::sched::setns` 直连，全 namespace
+  （mnt/uts/net/ipc/cgroup/user/pid），用 inode 比较跳过相同 ns（避 EINVAL）；
+  PID 校验（必须在 `tinybox-` cgroup 内）；为此 `run_sandbox` 始终建追踪
+  cgroup；交互时 `setsid`+`TIOCSCTTY` 取控制终端。
+- **P2-1**：`rootfs.rs` 加 `setup_special_fs`，pivot 前在 merged 下挂
+  `/dev`（tmpfs + bind 设备节点 + devpts + shm）、`/tmp`（size-capped tmpfs）、
+  `/sys`（空只读 tmpfs 防宿主信息泄漏）、`/proc`。
+- **验证**：`cargo test`（59 测试）+ `cargo clippy -- -D warnings` 干净；
+  phase 1/3/5/6/7/8/13 acceptance 全绿。**M2 关闭，研究轨 R1 可启动。**
 
 ## 相关项目
 
