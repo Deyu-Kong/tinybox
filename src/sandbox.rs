@@ -60,24 +60,20 @@ where
         .map(|s| CString::new(s.as_str()).unwrap())
         .collect();
 
-    let needs_cgroup = config.memory.is_some()
-        || config.cpus.is_some()
-        || config.cpu_quota.is_some()
-        || config.pids_limit.is_some();
-
-    let cgroup = if needs_cgroup {
-        let cgroup_config = CgroupConfig {
-            name: format!("tinybox-{}", std::process::id()),
-            memory: config.memory,
-            cpus: config.cpus,
-            cpu_quota: config.cpu_quota,
-            cpu_period: config.cpu_period,
-            pids_limit: config.pids_limit,
-        };
-        Some(Cgroup::new(&cgroup_config)?)
-    } else {
-        None
+    // Always create a tracking cgroup for the sandbox (even with no limits):
+    // (a) it gives `tinybox exec` a reliable marker to validate a target pid
+    // belongs to a tinybox sandbox via /proc/<pid>/cgroup (P1-5), and
+    // (b) it lets the daemon kill/track every sandbox by cgroup. The cost is
+    // one mkdir in /sys/fs/cgroup per sandbox.
+    let cgroup_config = CgroupConfig {
+        name: format!("tinybox-{}", std::process::id()),
+        memory: config.memory,
+        cpus: config.cpus,
+        cpu_quota: config.cpu_quota,
+        cpu_period: config.cpu_period,
+        pids_limit: config.pids_limit,
     };
+    let cgroup = Some(Cgroup::new(&cgroup_config)?);
 
     // Fail fast: validate the rootfs BEFORE forking, so a bad rootfs surfaces
     // as a runtime error (Err → daemon "failed" status) rather than a child
