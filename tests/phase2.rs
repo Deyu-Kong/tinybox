@@ -54,7 +54,11 @@ fn test_uts_namespace_hostname() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.trim() == "sbox1", "expected 'sbox1', got: {}", stdout);
+    assert!(
+        stdout.trim() == "sbox1",
+        "expected 'sbox1', got: {}",
+        stdout
+    );
 }
 
 #[test]

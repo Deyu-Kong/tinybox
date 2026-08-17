@@ -49,22 +49,34 @@ capabilities 的静态骨架，但仍是 **rootful、实验性实现**，不可�
 
 ### M2 后复审新增的开放项
 
-- **A1（正确性/安全）OCI namespace 子集**：`child_main` 无论是否请求
+- **A1（正确性/安全）OCI namespace 子集 ✅ C0 关闭**：`child_main` 无论是否请求
   mount namespace 都执行 mount propagation、rootfs 和 `/proc` 初始化；显式
   `user` namespace 又被静默忽略。必须校验必需 namespace，或只在对应 namespace
   中执行相关初始化，且拒绝不支持的 `user`。
-- **A2（正确性）daemon 状态**：只有 fork 前错误返回 `Err`；child setup、
+- **A2（正确性）daemon 状态 ✅ C0 关闭**：只有 fork 前错误返回 `Err`；child setup、
   `chdir`、setuid 或 exec 失败均变成 exit code 1，仍标记 `completed`。需要独立
   setup-error pipe/protocol。
-- **A3（正确性）特殊文件系统**：device bind、devpts、shm、sys mount 多处
+- **A3（正确性）特殊文件系统 ✅ C0 关闭**：device bind、devpts、shm、sys mount 多处
   `.ok()`；“完整硬化”没有 fail-closed 保证。`/dev/mqueue` 也未实现。
 - **A4（功能）proxy**：实现只有隔离 netns + proxy env；没有 loopback bring-up、
   veth、socket relay 或其它宿主代理转接。`127.0.0.1:PORT` 指向沙箱自身，故当前
   代码不能兑现“wget 经宿主 proxy 成功”。
-- **A5（正确性）只读 volume**：bind mount 初次调用附加 `MS_RDONLY`，未执行
+- **A5（正确性）只读 volume ✅ C0 关闭**：bind mount 初次调用附加 `MS_RDONLY`，未执行
   `MS_REMOUNT|MS_BIND|MS_RDONLY`；只读语义需要修复并以写失败验收。
-- **A6（验证）测试门误导**：非 root 下需要特权的集成测试直接返回，cargo 会
+- **A6（验证）测试门误导 ✅ C0 关闭**：非 root 下需要特权的集成测试直接返回，cargo 会
   报为通过。报告测试结果时必须区分“编译/非特权测试通过”和“root 验收通过”。
+
+**C0 解决记录（2026-08-17）：** OCI namespace 改为类型化并拒绝未知与
+`user`；显式集合必须包含 mount namespace。`CLOEXEC` setup pipe 将
+`setup_failed` 与 payload exit 分离。特殊 FS 关键错误改为 fail-closed；volume
+移到 pivot 前绑定，拒绝 symlink target，并执行真正的只读 remount。cgroup
+验证 v2 controller，CLI 显示实验性警告；CI 将无特权 unit/lint 与 root C0
+验收分开。A4 的网络数据通路仍按计划留给 C3。
+
+**Capability track（2026-08-17）：** C1 已加入 CLI/API 共用的版本化
+`CapabilityDescriptor`、资源 ceiling 与稳定 policy hash；未执行的网络/phase
+规则 fail closed。C2 已用 Landlock ABI 强制 sandbox payload 的 FS ceiling，
+并以读写、只读、未声明路径和 symlink escape 的 root 验收覆盖。C3–C6 尚未实现。
 
 ---
 
@@ -391,15 +403,15 @@ capabilities 的静态骨架，但仍是 **rootful、实验性实现**，不可�
 | Phase | Feature | Status | Open items |
 |-------|---------|--------|------------|
 | 1 | skeleton + CLI + exec | ✅ | — |
-| 2 | namespaces (pid/mount/uts/net) | ⚠️ | 默认路径具备；OCI 子集有 A1 |
-| 3 | overlayfs + pivot_root | ⚠️ | 特殊 FS 错误被忽略（A3） |
+| 2 | namespaces (pid/mount/uts/net) | ✅ | OCI 子集 fail-closed（A1/C0） |
+| 3 | overlayfs + pivot_root | ✅ | 特殊 FS fail-closed（A3/C0） |
 | 4 | cgroup limits | ⚠️ | P2-2（无 v2 校验，swap 硬编码） |
 | 5 | seccomp + caps | ✅ | —（P0-3、P0-4 已在 M1 修） |
-| 6 | OCI bundle | ⚠️ | 解析部分字段；namespace/user 语义仍有 A1 |
+| 6 | OCI bundle | ⚠️ | namespace 已 fail-closed；仍仅支持字段子集 |
 | 7 | network（isolated + proxy env） | ⚠️ | 无宿主代理转接，不能证明代理可用（A4） |
-| 8 | daemon API | ⚠️ | child setup 失败仍可能记 completed；另有 P2-5（A2） |
+| 8 | daemon API | ⚠️ | setup_failed 已区分；仍有 P2-5 持久化/鉴权/日志 |
 | 9 | local images | ⚠️ | P2-3 |
 | 10 | registry pull | ⚠️ | P2-4 |
 | 11 | ~~network bridge~~ | 🗑 移除 | M1 移除（Option A）；原 P0-1 |
-| 12 | volumes | ⚠️ | 只读 bind 语义未可靠实现（A5） |
+| 12 | volumes | ✅ | pivot 前 bind、symlink 防护、只读 remount（A5/C0） |
 | 13 | exec | ⚠️ | setns + 基础 PID 校验已实现；未分配 PTY，验证覆盖有限 |

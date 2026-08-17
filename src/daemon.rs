@@ -1,4 +1,5 @@
-use crate::sandbox::{run_sandbox_with_pid, SandboxConfig};
+use crate::policy::CapabilityDescriptor;
+use crate::sandbox::{run_sandbox_with_pid, SandboxConfig, SetupError};
 use axum::{
     extract::{Path, State},
     http::{header::CONTENT_TYPE, StatusCode},
@@ -33,6 +34,8 @@ struct Sandbox {
     pid: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    policy_hash: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -59,6 +62,8 @@ struct CreateRequest {
     // the API — disabling seccomp/caps remotely is a footgun.
     #[serde(default)]
     dangerous: Option<bool>,
+    #[serde(default)]
+    policy: Option<CapabilityDescriptor>,
 }
 
 pub async fn serve(listen: SocketAddr) -> anyhow::Result<()> {
@@ -93,6 +98,32 @@ async fn create(
             Json(serde_json::json!({"error":"dangerous mode cannot be enabled over the API"})),
         );
     }
+    let loaded_policy = match req.policy {
+        Some(policy) => match policy.compile() {
+            Ok(policy) => Some(policy),
+            Err(error) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": format!("invalid policy: {error:#}")})),
+                );
+            }
+        },
+        None => None,
+    };
+    let policy_hash = loaded_policy.as_ref().map(|policy| policy.hash.clone());
+    if let Some(policy) = &loaded_policy {
+        let resources = &policy.descriptor.resources;
+        let requested_memory = req.memory_limit_mb.map(|value| value * 1024 * 1024);
+        if requested_memory.is_some_and(|value| value > resources.memory_bytes)
+            || req.cpus.is_some_and(|value| value > resources.cpus)
+            || req.pids_limit.is_some_and(|value| value > resources.pids)
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error":"requested resources exceed policy ceiling"})),
+            );
+        }
+    }
     let id = format!("sb-{}", state.next_id.fetch_add(1, Ordering::Relaxed));
     let entry = Sandbox {
         id: id.clone(),
@@ -100,11 +131,15 @@ async fn create(
         exit_code: None,
         pid: None,
         error: None,
+        policy_hash: policy_hash.clone(),
     };
     state.sandboxes.lock().unwrap().insert(id.clone(), entry);
     let state_clone = state.clone();
     let id_clone = id.clone();
     tokio::task::spawn_blocking(move || {
+        let policy_resources = loaded_policy
+            .as_ref()
+            .map(|policy| &policy.descriptor.resources);
         let config = SandboxConfig {
             command: req.command,
             hostname: req.hostname,
@@ -113,12 +148,21 @@ async fn create(
             env: req.env,
             proxy: req.proxy,
             volumes: req.volumes,
-            memory: req.memory_limit_mb.map(|v| v * 1024 * 1024),
-            cpus: req.cpus,
+            memory: policy_resources
+                .map(|resources| resources.memory_bytes)
+                .or_else(|| req.memory_limit_mb.map(|v| v * 1024 * 1024)),
+            cpus: policy_resources
+                .map(|resources| resources.cpus)
+                .or(req.cpus),
             cpu_quota: None,
             cpu_period: None,
-            pids_limit: req.pids_limit,
+            pids_limit: policy_resources
+                .map(|resources| resources.pids)
+                .or(req.pids_limit),
             dangerous: false,
+            filesystem_policy: loaded_policy
+                .as_ref()
+                .map(|policy| policy.descriptor.filesystem.clone()),
             namespaces: None,
             cwd: None,
             uid: 0,
@@ -139,7 +183,11 @@ async fn create(
                     sb.exit_code = Some(code);
                 }
                 Err(e) => {
-                    sb.status = "failed".into();
+                    sb.status = if e.downcast_ref::<SetupError>().is_some() {
+                        "setup_failed".into()
+                    } else {
+                        "failed".into()
+                    };
                     sb.error = Some(format!("{e:#}"));
                 }
             }
@@ -147,7 +195,7 @@ async fn create(
     });
     (
         StatusCode::ACCEPTED,
-        Json(serde_json::json!({"id": id, "status": "running"})),
+        Json(serde_json::json!({"id": id, "status": "running", "policy_hash": policy_hash})),
     )
 }
 
@@ -163,7 +211,7 @@ async fn get_one(Path(id): Path<String>, State(state): State<AppState>) -> impl 
 async fn remove(Path(id): Path<String>, State(state): State<AppState>) -> StatusCode {
     let mut sandboxes = state.sandboxes.lock().unwrap();
     if let Some(sb) = sandboxes.get(&id) {
-        if sb.status == "running" || sb.status == "failed" {
+        if sb.status == "running" || sb.status == "failed" || sb.status == "setup_failed" {
             if let Some(pid) = sb.pid {
                 let _ = kill(Pid::from_raw(pid), Signal::SIGKILL);
             }
@@ -177,10 +225,7 @@ async fn remove(Path(id): Path<String>, State(state): State<AppState>) -> Status
 async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
     let sandboxes = state.sandboxes.lock().unwrap();
     let total = sandboxes.len();
-    let running = sandboxes
-        .values()
-        .filter(|s| s.status == "running")
-        .count();
+    let running = sandboxes.values().filter(|s| s.status == "running").count();
     // P1-3: count completed and failed explicitly — previously failed
     // sandboxes were miscounted as "completed" (total - running).
     let completed = sandboxes
@@ -188,8 +233,12 @@ async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
         .filter(|s| s.status == "completed")
         .count();
     let failed = sandboxes.values().filter(|s| s.status == "failed").count();
+    let setup_failed = sandboxes
+        .values()
+        .filter(|s| s.status == "setup_failed")
+        .count();
     let body = format!(
-        "# HELP tinybox_sandboxes_total Total sandboxes created\n# TYPE tinybox_sandboxes_total counter\ntinybox_sandboxes_total {total}\n# HELP tinybox_sandboxes_running Currently running sandboxes\n# TYPE tinybox_sandboxes_running gauge\ntinybox_sandboxes_running {running}\n# HELP tinybox_sandboxes_completed Completed sandboxes\n# TYPE tinybox_sandboxes_completed gauge\ntinybox_sandboxes_completed {completed}\n# HELP tinybox_sandboxes_failed Failed sandboxes\n# TYPE tinybox_sandboxes_failed gauge\ntinybox_sandboxes_failed {failed}\n"
+        "# HELP tinybox_sandboxes_total Total sandboxes created\n# TYPE tinybox_sandboxes_total counter\ntinybox_sandboxes_total {total}\n# HELP tinybox_sandboxes_running Currently running sandboxes\n# TYPE tinybox_sandboxes_running gauge\ntinybox_sandboxes_running {running}\n# HELP tinybox_sandboxes_completed Completed payloads\n# TYPE tinybox_sandboxes_completed gauge\ntinybox_sandboxes_completed {completed}\n# HELP tinybox_sandboxes_failed Runtime failures\n# TYPE tinybox_sandboxes_failed gauge\ntinybox_sandboxes_failed {failed}\n# HELP tinybox_sandboxes_setup_failed Sandbox setup failures\n# TYPE tinybox_sandboxes_setup_failed gauge\ntinybox_sandboxes_setup_failed {setup_failed}\n"
     );
     ([(CONTENT_TYPE, "text/plain; version=0.0.4")], body)
 }

@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use nix::mount::{mount, umount2, MntFlags, MsFlags};
 use nix::unistd::pivot_root;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub struct RootfsConfig {
     pub rootfs_path: PathBuf,
@@ -67,7 +67,7 @@ impl RootfsConfig {
 
         // /proc
         let proc_dir = merged.join("proc");
-        fs::create_dir_all(&proc_dir).ok();
+        fs::create_dir_all(&proc_dir).context("failed to create /proc")?;
         mount(
             Some("proc"),
             &proc_dir,
@@ -94,7 +94,8 @@ impl RootfsConfig {
         for node in ["null", "zero", "urandom", "random", "tty", "full"] {
             let host = format!("/dev/{node}");
             let tgt = dev_dir.join(node);
-            fs::File::create(&tgt).ok();
+            fs::File::create(&tgt)
+                .with_context(|| format!("failed to create device mountpoint {tgt:?}"))?;
             mount(
                 Some(host.as_str()),
                 &tgt,
@@ -102,7 +103,7 @@ impl RootfsConfig {
                 MsFlags::MS_BIND,
                 None::<&str>,
             )
-            .ok();
+            .with_context(|| format!("failed to bind {host} to {tgt:?}"))?;
         }
 
         // /dev/pts (devpts, new instance)
@@ -115,10 +116,11 @@ impl RootfsConfig {
             MsFlags::MS_NOSUID | MsFlags::MS_NOEXEC,
             Some("newinstance,ptmxmode=0666"),
         )
-        .ok();
+        .context("failed to mount private devpts")?;
         // /dev/ptmx → /dev/pts/ptmx
         let ptmx = dev_dir.join("ptmx");
-        let _ = std::os::unix::fs::symlink("pts/ptmx", &ptmx);
+        std::os::unix::fs::symlink("pts/ptmx", &ptmx)
+            .context("failed to create /dev/ptmx symlink")?;
 
         // /dev/shm (tmpfs, 1777)
         let shm_dir = dev_dir.join("shm");
@@ -130,7 +132,7 @@ impl RootfsConfig {
             MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
             Some("mode=1777"),
         )
-        .ok();
+        .context("failed to mount /dev/shm")?;
 
         // /tmp (tmpfs, size-capped)
         let tmp_dir = merged.join("tmp");
@@ -157,9 +159,13 @@ impl RootfsConfig {
             MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_RDONLY,
             None::<&str>,
         )
-        .ok();
+        .context("failed to mount empty read-only /sys")?;
 
         Ok(())
+    }
+
+    pub fn merged_path(&self) -> PathBuf {
+        self.work_dir.join("merged")
     }
 
     pub fn pivot(&self) -> Result<()> {
@@ -207,6 +213,110 @@ impl RootfsConfig {
     }
 }
 
+pub fn mount_volumes(volumes: &[String], target_root: &Path) -> Result<()> {
+    for volume in volumes {
+        let (host, container, readonly) = parse_volume(volume)?;
+        let host = Path::new(host);
+        if !host.exists() {
+            anyhow::bail!("volume source does not exist: {}", host.display());
+        }
+        let host = fs::canonicalize(host)
+            .with_context(|| format!("failed to resolve volume source {}", host.display()))?;
+
+        let relative = Path::new(container)
+            .strip_prefix("/")
+            .context("volume target must be an absolute path")?;
+        if relative.as_os_str().is_empty() {
+            anyhow::bail!("mounting a volume over the sandbox root is forbidden");
+        }
+        if relative.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::CurDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        }) {
+            anyhow::bail!("volume target must be a normalized absolute path: {container}");
+        }
+        reject_symlink_components(target_root, relative)?;
+        let target = target_root.join(relative);
+        if host.is_dir() {
+            fs::create_dir_all(&target)
+                .with_context(|| format!("failed to create volume target {}", target.display()))?;
+        } else if host.is_file() {
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).with_context(|| {
+                    format!("failed to create volume target parent {}", parent.display())
+                })?;
+            }
+            fs::File::create(&target).with_context(|| {
+                format!("failed to create volume file target {}", target.display())
+            })?;
+        } else {
+            anyhow::bail!("volume source must be a regular file or directory: {host:?}");
+        }
+
+        mount(
+            Some(&host),
+            &target,
+            None::<&str>,
+            MsFlags::MS_BIND | MsFlags::MS_REC,
+            None::<&str>,
+        )
+        .with_context(|| format!("failed to bind {} to {}", host.display(), target.display()))?;
+
+        if readonly {
+            mount(
+                None::<&str>,
+                &target,
+                None::<&str>,
+                MsFlags::MS_REMOUNT
+                    | MsFlags::MS_BIND
+                    | MsFlags::MS_RDONLY
+                    | MsFlags::MS_NOSUID
+                    | MsFlags::MS_NODEV,
+                None::<&str>,
+            )
+            .with_context(|| format!("failed to remount {} read-only", target.display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn reject_symlink_components(root: &Path, relative: &Path) -> Result<()> {
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                anyhow::bail!(
+                    "volume target traverses a symbolic link: {}",
+                    current.display()
+                );
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("failed to inspect volume target {}", current.display())
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn parse_volume(value: &str) -> Result<(&str, &str, bool)> {
+    let parts: Vec<&str> = value.split(':').collect();
+    match parts.as_slice() {
+        [host, container] => Ok((host, container, false)),
+        [host, container, "ro"] => Ok((host, container, true)),
+        _ => anyhow::bail!("invalid volume spec: {value}; expected HOST:CONTAINER[:ro]"),
+    }
+}
+
 impl Drop for RootfsConfig {
     fn drop(&mut self) {
         self.cleanup();
@@ -227,5 +337,19 @@ mod tests {
     fn test_rootfs_config_new_file() {
         let result = RootfsConfig::new(PathBuf::from("/etc/passwd"), false);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_volume_specs_before_mounting() {
+        assert!(parse_volume("missing-target").is_err());
+        assert!(parse_volume("/host:relative").is_ok());
+        assert!(parse_volume("/host:/target:rw").is_err());
+    }
+
+    #[test]
+    fn rejects_symlink_in_volume_target() {
+        let root = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink("/tmp", root.path().join("escape")).unwrap();
+        assert!(reject_symlink_components(root.path(), Path::new("escape/data")).is_err());
     }
 }

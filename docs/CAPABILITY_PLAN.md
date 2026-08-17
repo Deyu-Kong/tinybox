@@ -268,9 +268,9 @@ Documentation。每个 tag 只有 root 验收证据存在且用户明确授权�
 
 | Milestone | 状态 | 依赖/阻塞 |
 |---|---|---|
-| C0 可信底座 | ⬜ 未开始 | PLAN A1–A6 |
-| C1 静态 descriptor | ⬜ 未开始 | C0；非空网络规则暂 fail closed |
-| C2 FS ceiling | ⬜ 未开始 | C1 |
+| C0 可信底座 | ✅ 完成（2026-08-17） | A4 网络通路按计划留给 C3 |
+| C1 静态 descriptor | ✅ 完成（2026-08-17） | 非空网络规则按计划 fail closed 到 C3 |
+| C2 FS ceiling | ✅ 完成（2026-08-17） | sandbox payload 已强制；host Agent launcher 留 C6 |
 | C3 网络 broker | ⬜ 未开始 | C0、C1 |
 | C4 统一审计 | ⬜ 未开始 | C1；网络事件依赖 C3 |
 | C5 动态 phase | ⬜ 未开始 | C2、C3、C4 |

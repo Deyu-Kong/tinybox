@@ -3,6 +3,33 @@ use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NamespaceType {
+    Pid,
+    Mount,
+    Uts,
+    Network,
+    Ipc,
+    Cgroup,
+}
+
+impl NamespaceType {
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            "pid" => Ok(Self::Pid),
+            "mount" => Ok(Self::Mount),
+            "uts" => Ok(Self::Uts),
+            "network" => Ok(Self::Network),
+            "ipc" => Ok(Self::Ipc),
+            "cgroup" => Ok(Self::Cgroup),
+            "user" => anyhow::bail!(
+                "OCI user namespace is unsupported until uid/gid mappings are implemented"
+            ),
+            other => anyhow::bail!("unsupported OCI namespace type: {other}"),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct OciConfig {
     process: Option<OciProcess>,
@@ -57,7 +84,7 @@ pub struct OciBundle {
     pub cwd: Option<String>,
     pub uid: u32,
     pub gid: u32,
-    pub namespaces: Option<Vec<String>>,
+    pub namespaces: Option<Vec<NamespaceType>>,
 }
 
 pub fn load_bundle(bundle: &Path) -> Result<OciBundle> {
@@ -85,15 +112,16 @@ pub fn load_bundle(bundle: &Path) -> Result<OciBundle> {
     // P1-1: honor linux.namespaces. If the bundle lists any, tinybox unshares
     // only those (OCI semantics); if absent, tinybox keeps its default of all
     // namespaces (maximum isolation).
-    let namespaces = config
-        .linux
-        .and_then(|l| {
-            if l.namespaces.is_empty() {
-                None
-            } else {
-                Some(l.namespaces.into_iter().map(|n| n.ns_type).collect())
-            }
-        });
+    let namespaces = match config.linux {
+        Some(linux) if !linux.namespaces.is_empty() => Some(
+            linux
+                .namespaces
+                .into_iter()
+                .map(|namespace| NamespaceType::parse(&namespace.ns_type))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        _ => None,
+    };
     Ok(OciBundle {
         command: process.args,
         rootfs,
@@ -148,7 +176,23 @@ mod tests {
         assert_eq!(bundle.gid, 1000);
         assert_eq!(
             bundle.namespaces,
-            Some(vec!["pid".to_string(), "mount".to_string()])
+            Some(vec![NamespaceType::Pid, NamespaceType::Mount])
         );
+    }
+
+    #[test]
+    fn rejects_unknown_and_user_namespaces() {
+        for namespace in ["user", "future"] {
+            let dir = tempfile::tempdir().unwrap();
+            fs::create_dir(dir.path().join("rootfs")).unwrap();
+            fs::write(
+                dir.path().join("config.json"),
+                format!(
+                    r#"{{"process":{{"args":["sh"]}},"root":{{"path":"rootfs"}},"linux":{{"namespaces":[{{"type":"{namespace}"}}]}}}}"#
+                ),
+            )
+            .unwrap();
+            assert!(load_bundle(dir.path()).is_err());
+        }
     }
 }

@@ -1,0 +1,188 @@
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::fs;
+use std::path::{Component, Path, PathBuf};
+
+pub const POLICY_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapabilityDescriptor {
+    pub version: u32,
+    #[serde(default)]
+    pub filesystem: Vec<FsRule>,
+    #[serde(default)]
+    pub network: Vec<NetworkRule>,
+    pub resources: ResourcePolicy,
+    #[serde(default)]
+    pub phases: Vec<PhasePolicy>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FsRule {
+    pub path: PathBuf,
+    pub access: FsAccess,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FsAccess {
+    Read,
+    ReadWrite,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkRule {
+    pub host: String,
+    pub port: u16,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourcePolicy {
+    pub memory_bytes: u64,
+    pub cpus: f64,
+    pub pids: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PhasePolicy {
+    pub name: String,
+}
+
+pub struct LoadedPolicy {
+    pub descriptor: CapabilityDescriptor,
+    pub hash: String,
+}
+
+impl CapabilityDescriptor {
+    pub fn load(path: &Path) -> Result<LoadedPolicy> {
+        let bytes =
+            fs::read(path).with_context(|| format!("failed to read policy {}", path.display()))?;
+        let descriptor: Self =
+            serde_json::from_slice(&bytes).context("invalid capability policy JSON")?;
+        descriptor.compile()
+    }
+
+    pub fn compile(self) -> Result<LoadedPolicy> {
+        self.validate()?;
+        let canonical = serde_json::to_vec(&self).context("failed to canonicalize policy")?;
+        let hash = format!("sha256:{:x}", Sha256::digest(canonical));
+        Ok(LoadedPolicy {
+            descriptor: self,
+            hash,
+        })
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.version != POLICY_VERSION {
+            anyhow::bail!(
+                "unsupported capability policy version {}; expected {}",
+                self.version,
+                POLICY_VERSION
+            );
+        }
+        if self.resources.memory_bytes == 0 {
+            anyhow::bail!("policy resources.memory_bytes must be positive");
+        }
+        if !self.resources.cpus.is_finite() || self.resources.cpus <= 0.0 {
+            anyhow::bail!("policy resources.cpus must be finite and positive");
+        }
+        if self.resources.pids == 0 {
+            anyhow::bail!("policy resources.pids must be positive");
+        }
+        for rule in &self.filesystem {
+            validate_absolute_normalized_path(&rule.path)?;
+        }
+        for rule in &self.network {
+            validate_host(&rule.host)?;
+        }
+        if !self.network.is_empty() {
+            anyhow::bail!("network capability rules require the C3 policy broker");
+        }
+        if !self.phases.is_empty() {
+            anyhow::bail!("phase policies require C5 dynamic policy enforcement");
+        }
+        Ok(())
+    }
+}
+
+fn validate_absolute_normalized_path(path: &Path) -> Result<()> {
+    if !path.is_absolute() || path.as_os_str().is_empty() {
+        anyhow::bail!("filesystem capability path must be absolute: {path:?}");
+    }
+    if path.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::CurDir | Component::Prefix(_)
+        )
+    }) {
+        anyhow::bail!("filesystem capability path must be normalized: {path:?}");
+    }
+    Ok(())
+}
+
+fn validate_host(host: &str) -> Result<()> {
+    if host.is_empty()
+        || host != host.to_ascii_lowercase()
+        || host.ends_with('.')
+        || host.contains(['/', ':', '@'])
+    {
+        anyhow::bail!("network host must be a normalized lowercase DNS name: {host}");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn offline_policy() -> CapabilityDescriptor {
+        CapabilityDescriptor {
+            version: POLICY_VERSION,
+            filesystem: Vec::new(),
+            network: Vec::new(),
+            resources: ResourcePolicy {
+                memory_bytes: 512 * 1024 * 1024,
+                cpus: 1.0,
+                pids: 50,
+            },
+            phases: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn stable_hash_for_same_policy() {
+        let first = offline_policy().compile().unwrap().hash;
+        let second = offline_policy().compile().unwrap().hash;
+        assert_eq!(first, second);
+        assert!(first.starts_with("sha256:"));
+    }
+
+    #[test]
+    fn rejects_unknown_fields() {
+        let json = r#"{"version":1,"filesystem":[],"network":[],"resources":{"memory_bytes":1,"cpus":1.0,"pids":1},"phases":[],"grant_all":true}"#;
+        assert!(serde_json::from_str::<CapabilityDescriptor>(json).is_err());
+    }
+
+    #[test]
+    fn rejects_unenforced_capabilities() {
+        let mut policy = offline_policy();
+        policy.network.push(NetworkRule {
+            host: "example.com".into(),
+            port: 443,
+        });
+        assert!(policy.compile().is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_resources() {
+        let mut policy = offline_policy();
+        policy.resources.cpus = f64::NAN;
+        assert!(policy.compile().is_err());
+    }
+}

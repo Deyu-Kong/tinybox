@@ -34,6 +34,7 @@ tinybox 是一个从零用 Rust 实现的 Linux 沙箱运行时，类似 `runc` 
 优先最小依赖。批准的 crate：
 - `clap`（CLI 解析）
 - `serde` / `serde_json` / `serde_yaml`（配置序列化）
+- `sha2`（CapabilityDescriptor 规范化策略的稳定 SHA-256 标识）
 - `axum`（HTTP API）
 - `nix`（Linux syscall 包装，用于 namespaces、pivot_root 等）
 - `anyhow` / `thiserror`（错误处理）

@@ -30,7 +30,13 @@ fn create_test_rootfs() -> TempDir {
     }
 
     let output = Command::new("sh")
-        .args(["-c", &format!("ldd {}/bin/* 2>/dev/null | grep -o '/[^ ]*' | sort -u", rootfs.display())])
+        .args([
+            "-c",
+            &format!(
+                "ldd {}/bin/* 2>/dev/null | grep -o '/[^ ]*' | sort -u",
+                rootfs.display()
+            ),
+        ])
         .output()
         .expect("failed to run ldd");
 
@@ -69,11 +75,22 @@ fn test_rootfs_basic() {
 
     let rootfs = create_test_rootfs();
     let output = tinybox_bin()
-        .args(["run", "--root", rootfs.path().to_str().unwrap(), "--", "echo", "hello"])
+        .args([
+            "run",
+            "--root",
+            rootfs.path().to_str().unwrap(),
+            "--",
+            "echo",
+            "hello",
+        ])
         .output()
         .expect("failed to execute tinybox");
 
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("hello"));
 }
@@ -101,11 +118,18 @@ fn test_rootfs_isolation() {
         .output()
         .expect("failed to execute tinybox");
 
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("isolated"));
 
-    assert!(!test_file.exists(), "file should not exist on host after sandbox exits");
+    assert!(
+        !test_file.exists(),
+        "file should not exist on host after sandbox exits"
+    );
 }
 
 #[test]
@@ -129,7 +153,11 @@ fn test_rootfs_with_hostname() {
         .output()
         .expect("failed to execute tinybox");
 
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.trim(), "sandbox3");
 }

@@ -38,7 +38,7 @@ else
 fi
 
 cat > "$BUNDLE/config.json" <<'EOF'
-{"process":{"args":["sh","-c","readlink /proc/self/ns/net"]},"root":{"path":"/"},"linux":{"namespaces":[{"type":"pid"},{"type":"mount"},{"type":"net"}]}}
+{"process":{"args":["sh","-c","readlink /proc/self/ns/net"]},"root":{"path":"/"},"linux":{"namespaces":[{"type":"pid"},{"type":"mount"},{"type":"network"}]}}
 EOF
 echo -n "Test 3: namespace subset with {net} creates a private netns (P1-1)... "
 OUT=$($TINYBOX run --oci "$BUNDLE")

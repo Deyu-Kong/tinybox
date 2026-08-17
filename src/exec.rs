@@ -45,18 +45,13 @@ pub fn exec_in_container(pid: u32, command: &[String]) -> Result<i32> {
         let self_link = format!("/proc/self/ns/{name}");
         let tgt_link = format!("/proc/{pid}/ns/{name}");
         // Same namespace → no setns needed (and setns would EINVAL).
-        if let (Ok(s), Ok(t)) = (
-            fs::read_link(&self_link),
-            fs::read_link(&tgt_link),
-        ) {
+        if let (Ok(s), Ok(t)) = (fs::read_link(&self_link), fs::read_link(&tgt_link)) {
             if s == t {
                 continue;
             }
         }
-        let f = fs::File::open(&tgt_link)
-            .with_context(|| format!("failed to open {tgt_link}"))?;
-        setns(f, flag)
-            .with_context(|| format!("failed to setns({name}) for pid {pid}"))?;
+        let f = fs::File::open(&tgt_link).with_context(|| format!("failed to open {tgt_link}"))?;
+        setns(f, flag).with_context(|| format!("failed to setns({name}) for pid {pid}"))?;
     }
 
     let program = CString::new(command[0].as_str())?;

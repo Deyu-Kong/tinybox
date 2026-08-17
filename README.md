@@ -12,6 +12,8 @@ A minimal, secure sandbox runtime for running AI Agents in isolated environments
 > correctness gaps in OCI namespace subsets, daemon failure reporting,
 > special-filesystem setup, proxy connectivity, and read-only volumes. See
 > [docs/PLAN.md](docs/PLAN.md) for the authoritative status.
+> C0 closed all of those re-audit items except proxy connectivity, which is
+> deliberately scheduled for the C3 network broker.
 
 ## Motivation
 
@@ -33,22 +35,26 @@ remediation roadmap. Per-phase status uses ✅ works / ⚠️ partial / ❌ brok
 The implementation sequence for Agent-oriented capability management is in
 [docs/CAPABILITY_PLAN.md](docs/CAPABILITY_PLAN.md).
 
+Capability-track status: C0–C2 complete. `--policy` now enforces resource
+ceilings and a Landlock filesystem ceiling; network rules fail closed until
+the C3 broker exists. Dynamic phases and Agent integration remain unimplemented.
+
 ### Feature Status (honest)
 
 | Phase | Feature | Status | Notes |
 |-------|---------|--------|-------|
 | 1 | Project skeleton + CLI + subprocess execution | ✅ | — |
-| 2 | Namespace isolation (PID/mount/UTS/Net) | ⚠️ | default path isolates; OCI subsets need validation |
-| 3 | Overlayfs rootfs + pivot_root | ⚠️ | special-FS setup ignores several mount failures |
+| 2 | Namespace isolation (PID/mount/UTS/Net) | ✅ | OCI subsets are typed and fail closed (C0) |
+| 3 | Overlayfs rootfs + pivot_root | ✅ | special-FS setup is fail closed (C0) |
 | 4 | cgroup resource limits (CPU/memory/pids) | ⚠️ | no v2 validation, `swap.max` hardcoded, no controller enabling (P2-2) |
 | 5 | seccomp + capabilities hardening | ✅ | `clone` flag-masked; escape syscalls removed; bounding set cleared (M1) |
-| 6 | OCI Bundle support (config.json subset) | ⚠️ | fields parse, but namespace/user semantics are incomplete |
+| 6 | OCI Bundle support (config.json subset) | ⚠️ | typed namespace subset; user namespace explicitly unsupported |
 | 7 | Network namespace + proxy environment | ⚠️ | isolated netns and env only; no host-proxy transport |
-| 8 | HTTP API + daemon mode + Prometheus metrics | ⚠️ | pre-fork failures tracked; child setup failures can appear completed |
+| 8 | HTTP API + daemon mode + Prometheus metrics | ⚠️ | setup failures separated; persistence/auth/log endpoints remain open |
 | 9 | Local image management (import/list/remove/run --image) | ⚠️ | no content addressing, no layering, no metadata (P2-3) |
 | 10 | Docker Registry image pull | ⚠️ | in-memory blobs (OOM risk); never fetches config blob; Docker Hub only (P2-4) |
 | 11 | ~~Network bridge + port mapping~~ | 🗑 | removed in M1 (Option A — contradicted design & leaked to host) |
-| 12 | Volume mounting (bind mounts) | ⚠️ | read-only remount is incomplete |
+| 12 | Volume mounting (bind mounts) | ✅ | pivot-before-bind ordering, symlink checks, real read-only remount |
 | 13 | Exec into running containers | ⚠️ | direct `setns` and basic PID check; reuses a TTY but does not allocate a PTY |
 
 ## Architecture

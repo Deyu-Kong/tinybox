@@ -2,7 +2,9 @@ mod cgroup;
 mod daemon;
 mod exec;
 mod image;
+mod landlock;
 mod oci;
+mod policy;
 mod registry;
 mod rootfs;
 mod sandbox;
@@ -14,7 +16,12 @@ use clap::{Parser, Subcommand};
 use sandbox::{run_sandbox, SandboxConfig};
 
 #[derive(Parser)]
-#[command(name = "tinybox", version, about = "A minimal Linux sandbox runtime")]
+#[command(
+    name = "tinybox",
+    version,
+    about = "A minimal Linux sandbox runtime",
+    long_about = "A minimal Linux sandbox runtime.\n\nWARNING: tinybox is experimental, rootful software and is not a production security boundary."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -58,6 +65,10 @@ enum Commands {
 
         #[arg(long)]
         proxy: Option<String>,
+
+        /// Apply a versioned Agent capability policy (experimental).
+        #[arg(long, value_name = "PATH")]
+        policy: Option<String>,
 
         #[arg(long)]
         oci: Option<String>,
@@ -152,6 +163,7 @@ fn main() -> Result<()> {
             pids_limit,
             dangerous,
             proxy,
+            policy,
             oci,
             image,
             read_only,
@@ -185,10 +197,48 @@ fn main() -> Result<()> {
                 } else {
                     (command, root, Vec::new(), read_only, None, 0, 0, None)
                 };
+            let loaded_policy = match policy {
+                Some(path) => {
+                    if dangerous {
+                        anyhow::bail!("--dangerous cannot be combined with --policy");
+                    }
+                    Some(policy::CapabilityDescriptor::load(std::path::Path::new(
+                        &path,
+                    ))?)
+                }
+                None => {
+                    eprintln!(
+                        "WARNING: running without --policy uses legacy sandbox configuration"
+                    );
+                    None
+                }
+            };
             let memory_bytes = match memory {
                 Some(s) => Some(parse_memory(&s)?),
                 None => None,
             };
+            let (memory_bytes, cpus, pids_limit) = if let Some(policy) = &loaded_policy {
+                let resources = &policy.descriptor.resources;
+                if memory_bytes.is_some_and(|value| value > resources.memory_bytes) {
+                    anyhow::bail!("--memory exceeds the policy ceiling");
+                }
+                if cpus.is_some_and(|value| value > resources.cpus) {
+                    anyhow::bail!("--cpus exceeds the policy ceiling");
+                }
+                if pids_limit.is_some_and(|value| value > resources.pids) {
+                    anyhow::bail!("--pids-limit exceeds the policy ceiling");
+                }
+                (
+                    memory_bytes.or(Some(resources.memory_bytes)),
+                    cpus.or(Some(resources.cpus)),
+                    pids_limit.or(Some(resources.pids)),
+                )
+            } else {
+                (memory_bytes, cpus, pids_limit)
+            };
+            if let Some(policy) = &loaded_policy {
+                eprintln!("tinybox policy: {}", policy.hash);
+            }
             let config = SandboxConfig {
                 command,
                 hostname,
@@ -203,6 +253,9 @@ fn main() -> Result<()> {
                 cpu_period,
                 pids_limit,
                 dangerous,
+                filesystem_policy: loaded_policy
+                    .as_ref()
+                    .map(|policy| policy.descriptor.filesystem.clone()),
                 namespaces,
                 cwd,
                 uid,

@@ -1,17 +1,23 @@
 use anyhow::{bail, Context, Result};
+use nix::fcntl::OFlag;
 use nix::mount::{mount, MsFlags};
 use nix::sched::{unshare, CloneFlags};
 use nix::sys::signal::Signal;
 use nix::sys::wait::{waitpid, WaitStatus};
 use nix::unistd::{
-    chdir, close, execvp, execvpe, fork, pipe, read, setgid, sethostname, setuid, ForkResult,
+    chdir, close, execvp, execvpe, fork, pipe, pipe2, read, setgid, sethostname, setuid, ForkResult,
 };
 use std::ffi::CString;
-use std::os::unix::io::{BorrowedFd, IntoRawFd};
+use std::fmt;
+use std::io::Read as IoRead;
+use std::os::unix::io::{BorrowedFd, FromRawFd, IntoRawFd};
 use std::path::PathBuf;
 
 use crate::cgroup::{Cgroup, CgroupConfig};
-use crate::rootfs::RootfsConfig;
+use crate::landlock;
+use crate::oci::NamespaceType;
+use crate::policy::FsRule;
+use crate::rootfs::{mount_volumes, RootfsConfig};
 use crate::seccomp::{apply_seccomp_filter, drop_capabilities};
 
 pub struct SandboxConfig {
@@ -28,14 +34,26 @@ pub struct SandboxConfig {
     pub cpu_period: Option<u64>,
     pub pids_limit: Option<u64>,
     pub dangerous: bool,
+    pub filesystem_policy: Option<Vec<FsRule>>,
     /// None = unshare all (tinybox default, max isolation). Some(set) = honor
     /// only the listed OCI namespace types ("pid"/"mount"/"uts"/"net"/"ipc"/
     /// "user"/"cgroup").
-    pub namespaces: Option<Vec<String>>,
+    pub namespaces: Option<Vec<NamespaceType>>,
     pub cwd: Option<String>,
     pub uid: u32,
     pub gid: u32,
 }
+
+#[derive(Debug)]
+pub struct SetupError(String);
+
+impl fmt::Display for SetupError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "sandbox setup failed: {}", self.0)
+    }
+}
+
+impl std::error::Error for SetupError {}
 
 pub fn run_sandbox(config: &SandboxConfig) -> Result<i32> {
     run_sandbox_with_pid(config, |_| {})
@@ -53,12 +71,14 @@ where
         bail!("no command specified");
     }
 
+    validate_namespaces(config)?;
+
     let program = CString::new(config.command[0].as_str())?;
     let args: Vec<CString> = config
         .command
         .iter()
-        .map(|s| CString::new(s.as_str()).unwrap())
-        .collect();
+        .map(|s| CString::new(s.as_str()))
+        .collect::<std::result::Result<_, _>>()?;
 
     // Always create a tracking cgroup for the sandbox (even with no limits):
     // (a) it gives `tinybox exec` a reliable marker to validate a target pid
@@ -90,11 +110,16 @@ where
     let (read_fd, write_fd) = pipe().context("failed to create pipe")?;
     let read_fd = read_fd.into_raw_fd();
     let write_fd = write_fd.into_raw_fd();
+    let (setup_read_fd, setup_write_fd) =
+        pipe2(OFlag::O_CLOEXEC).context("failed to create setup error pipe")?;
+    let setup_read_fd = setup_read_fd.into_raw_fd();
+    let setup_write_fd = setup_write_fd.into_raw_fd();
 
     // SAFETY: fork() is safe here as we immediately handle namespace setup in the child.
     match unsafe { fork() }? {
         ForkResult::Parent { child } => {
             close(read_fd).ok();
+            close(setup_write_fd).ok();
 
             if let Some(ref cg) = cgroup {
                 cg.add_process(child.as_raw() as u32)?;
@@ -107,18 +132,29 @@ where
             nix::unistd::write(borrowed, b"go").ok();
             close(write_fd).ok();
 
+            let mut setup_message = String::new();
+            // SAFETY: setup_read_fd is owned by this branch and converted once.
+            let mut setup_reader = unsafe { std::fs::File::from_raw_fd(setup_read_fd) };
+            setup_reader
+                .read_to_string(&mut setup_message)
+                .context("failed to read child setup status")?;
             let status = waitpid(child, None)?;
             drop(cgroup);
+            if !setup_message.is_empty() {
+                return Err(SetupError(setup_message).into());
+            }
             Ok(exit_code_from_status(status))
         }
         ForkResult::Child => {
             close(write_fd).ok();
+            close(setup_read_fd).ok();
 
             let mut buf = [0u8; 2];
             let _ = read(read_fd, &mut buf);
             close(read_fd).ok();
 
-            if let Err(e) = child_main(config, &program, &args) {
+            if let Err(e) = child_main(config, &program, &args, setup_write_fd) {
+                report_setup_error(setup_write_fd, &format!("{e:#}"));
                 eprintln!("tinybox: {}", e);
                 std::process::exit(1);
             }
@@ -127,7 +163,12 @@ where
     }
 }
 
-fn child_main(config: &SandboxConfig, program: &CString, args: &[CString]) -> Result<()> {
+fn child_main(
+    config: &SandboxConfig,
+    program: &CString,
+    args: &[CString],
+    setup_write_fd: i32,
+) -> Result<()> {
     // SAFETY: unshare the requested namespace set. `config.namespaces == None`
     // is tinybox's default — the original four (NEWPID/NEWNS/NEWUTS/NEWNET),
     // maximum isolation WITHOUT NEWUSER (uid/gid mapping is R5/rootless).
@@ -146,35 +187,28 @@ fn child_main(config: &SandboxConfig, program: &CString, args: &[CString]) -> Re
                     | CloneFlags::CLONE_NEWNET,
             );
         }
-        Some(ns) => {
-            let want = |t: &str| ns.iter().any(|s| s.eq_ignore_ascii_case(t));
-            if want("pid") {
-                flags.insert(CloneFlags::CLONE_NEWPID);
-            }
-            if want("mount") || want("mnt") {
-                flags.insert(CloneFlags::CLONE_NEWNS);
-            }
-            if want("uts") {
-                flags.insert(CloneFlags::CLONE_NEWUTS);
-            }
-            if want("net") || want("network") {
-                flags.insert(CloneFlags::CLONE_NEWNET);
-            }
-            if want("ipc") {
-                flags.insert(CloneFlags::CLONE_NEWIPC);
-            }
-            if want("cgroup") {
-                flags.insert(CloneFlags::CLONE_NEWCGROUP);
-            }
-            if flags.is_empty() {
-                // No recognizable namespaces requested — fall back to the safe
-                // default rather than running with zero isolation.
-                flags.insert(
-                    CloneFlags::CLONE_NEWPID
-                        | CloneFlags::CLONE_NEWNS
-                        | CloneFlags::CLONE_NEWUTS
-                        | CloneFlags::CLONE_NEWNET,
-                );
+        Some(namespaces) => {
+            for namespace in namespaces {
+                match namespace {
+                    NamespaceType::Pid => {
+                        flags.insert(CloneFlags::CLONE_NEWPID);
+                    }
+                    NamespaceType::Mount => {
+                        flags.insert(CloneFlags::CLONE_NEWNS);
+                    }
+                    NamespaceType::Uts => {
+                        flags.insert(CloneFlags::CLONE_NEWUTS);
+                    }
+                    NamespaceType::Network => {
+                        flags.insert(CloneFlags::CLONE_NEWNET);
+                    }
+                    NamespaceType::Ipc => {
+                        flags.insert(CloneFlags::CLONE_NEWIPC);
+                    }
+                    NamespaceType::Cgroup => {
+                        flags.insert(CloneFlags::CLONE_NEWCGROUP);
+                    }
+                }
             }
         }
     }
@@ -200,15 +234,19 @@ fn child_main(config: &SandboxConfig, program: &CString, args: &[CString]) -> Re
         // P2-1: mount /dev /tmp /sys /proc under merged BEFORE pivot, while the
         // host's /dev device nodes are still reachable as bind sources.
         rootfs.setup_special_fs()?;
+        mount_volumes(&config.volumes, &rootfs.merged_path())?;
         Some(rootfs)
     } else {
         None
     };
 
+    let has_rootfs = rootfs_config.is_some();
+
     // SAFETY: fork() after unshare(CLONE_NEWPID) creates a process that is PID 1
     // in the new PID namespace.
     match unsafe { fork() }? {
         ForkResult::Parent { child } => {
+            close(setup_write_fd).ok();
             let status = waitpid(child, None)?;
             let code = exit_code_from_status(status);
             drop(rootfs_config);
@@ -225,7 +263,9 @@ fn child_main(config: &SandboxConfig, program: &CString, args: &[CString]) -> Re
                 // path is rootfs+pivot above.)
                 mount_proc()?;
             }
-            mount_volumes(&config.volumes)?;
+            if !has_rootfs {
+                mount_volumes(&config.volumes, std::path::Path::new("/"))?;
+            }
             // P1-1: honor OCI process.user — set gid then uid while we still
             // hold CAP_SETUID/CAP_SETGID (caps dropped below). gid must be set
             // before uid per setuid(2) rules.
@@ -234,6 +274,9 @@ fn child_main(config: &SandboxConfig, program: &CString, args: &[CString]) -> Re
             }
             if config.uid != 0 {
                 setuid(nix::unistd::Uid::from_raw(config.uid))?;
+            }
+            if let Some(rules) = &config.filesystem_policy {
+                landlock::enforce(rules)?;
             }
             drop_capabilities(config.dangerous)?;
             apply_seccomp_filter(config.dangerous)?;
@@ -256,6 +299,27 @@ fn child_main(config: &SandboxConfig, program: &CString, args: &[CString]) -> Re
     }
 }
 
+fn validate_namespaces(config: &SandboxConfig) -> Result<()> {
+    if !config.volumes.is_empty() && config.rootfs.is_none() {
+        bail!("volume mounts require an isolated rootfs");
+    }
+    if let Some(namespaces) = &config.namespaces {
+        if !namespaces.contains(&NamespaceType::Mount) {
+            bail!("a private mount namespace is required for sandbox filesystem setup");
+        }
+    }
+    Ok(())
+}
+
+fn report_setup_error(fd: i32, message: &str) {
+    let bytes = message.as_bytes();
+    // SAFETY: fd is the write end of the setup pipe and bytes is valid for its length.
+    unsafe {
+        libc::write(fd, bytes.as_ptr().cast(), bytes.len());
+    }
+    close(fd).ok();
+}
+
 fn effective_environment(config: &SandboxConfig) -> Vec<String> {
     let mut env = config.env.clone();
     if let Some(proxy) = &config.proxy {
@@ -276,35 +340,6 @@ fn mount_proc() -> Result<()> {
         MsFlags::empty(),
         None::<&str>,
     )?;
-    Ok(())
-}
-
-fn mount_volumes(volumes: &[String]) -> Result<()> {
-    for vol_spec in volumes {
-        let parts: Vec<&str> = vol_spec.split(':').collect();
-        if parts.len() < 2 {
-            bail!("invalid volume spec: {}", vol_spec);
-        }
-        let host_path = parts[0];
-        let container_path = parts[1];
-        let readonly = parts.get(2).map(|s| *s == "ro").unwrap_or(false);
-
-        std::fs::create_dir_all(container_path).ok();
-
-        let mut flags = MsFlags::MS_BIND | MsFlags::MS_REC;
-        if readonly {
-            flags |= MsFlags::MS_RDONLY;
-        }
-
-        mount(
-            Some(host_path),
-            container_path,
-            None::<&str>,
-            flags,
-            None::<&str>,
-        )
-        .with_context(|| format!("failed to mount {} to {}", host_path, container_path))?;
-    }
     Ok(())
 }
 
@@ -382,11 +417,62 @@ mod tests {
             cpu_period: None,
             pids_limit: None,
             dangerous: false,
+            filesystem_policy: None,
             namespaces: None,
             cwd: None,
             uid: 0,
             gid: 0,
         };
         assert!(run_sandbox(&config).is_err());
+    }
+
+    #[test]
+    fn explicit_namespaces_require_mount_namespace() {
+        let config = SandboxConfig {
+            command: vec!["true".into()],
+            hostname: None,
+            rootfs: None,
+            root_readonly: false,
+            env: Vec::new(),
+            proxy: None,
+            volumes: Vec::new(),
+            memory: None,
+            cpus: None,
+            cpu_quota: None,
+            cpu_period: None,
+            pids_limit: None,
+            dangerous: false,
+            filesystem_policy: None,
+            namespaces: Some(vec![NamespaceType::Pid]),
+            cwd: None,
+            uid: 0,
+            gid: 0,
+        };
+        assert!(validate_namespaces(&config).is_err());
+    }
+
+    #[test]
+    fn volumes_require_isolated_rootfs() {
+        let config = SandboxConfig {
+            command: vec!["true".into()],
+            hostname: None,
+            rootfs: None,
+            root_readonly: false,
+            env: Vec::new(),
+            proxy: None,
+            volumes: vec!["/host:/sandbox".into()],
+            memory: None,
+            cpus: None,
+            cpu_quota: None,
+            cpu_period: None,
+            pids_limit: None,
+            dangerous: false,
+            filesystem_policy: None,
+            namespaces: None,
+            cwd: None,
+            uid: 0,
+            gid: 0,
+        };
+        assert!(validate_namespaces(&config).is_err());
     }
 }

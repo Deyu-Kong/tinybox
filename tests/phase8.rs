@@ -74,7 +74,8 @@ fn daemon_serves_lifecycle_and_prometheus_metrics() {
     assert!(sb2.contains("failed"), "expected failed status, got: {sb2}");
     let metrics_after = request("GET", "/metrics", None);
     assert!(
-        metrics_after.contains("tinybox_sandboxes_failed") && !metrics_after.contains("tinybox_sandboxes_failed 0"),
+        metrics_after.contains("tinybox_sandboxes_failed")
+            && !metrics_after.contains("tinybox_sandboxes_failed 0"),
         "expected non-zero failed counter: {metrics_after}"
     );
 

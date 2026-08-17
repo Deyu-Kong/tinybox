@@ -52,7 +52,16 @@ fn test_dangerous_allows_mount() {
     }
 
     let output = tinybox_bin()
-        .args(["run", "--dangerous", "--", "mount", "-t", "tmpfs", "none", "/tmp"])
+        .args([
+            "run",
+            "--dangerous",
+            "--",
+            "mount",
+            "-t",
+            "tmpfs",
+            "none",
+            "/tmp",
+        ])
         .output()
         .expect("failed to execute tinybox");
 

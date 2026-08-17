@@ -24,6 +24,23 @@ impl Cgroup {
             anyhow::bail!("cgroup v2 not mounted at /sys/fs/cgroup");
         }
 
+        let controllers_path = cgroup_root.join("cgroup.controllers");
+        let controllers = fs::read_to_string(&controllers_path).with_context(|| {
+            format!(
+                "cgroup v2 controllers file is unavailable: {}",
+                controllers_path.display()
+            )
+        })?;
+        let require_controller = |name: &str, requested: bool| -> Result<()> {
+            if requested && !controllers.split_whitespace().any(|value| value == name) {
+                anyhow::bail!("required cgroup v2 controller is unavailable: {name}");
+            }
+            Ok(())
+        };
+        require_controller("memory", config.memory.is_some())?;
+        require_controller("cpu", config.cpus.is_some() || config.cpu_quota.is_some())?;
+        require_controller("pids", config.pids_limit.is_some())?;
+
         fs::create_dir_all(&path).context("failed to create cgroup directory")?;
 
         if let Some(memory) = config.memory {
@@ -32,7 +49,9 @@ impl Cgroup {
                 .with_context(|| format!("failed to write memory.max to {:?}", mem_max_path))?;
 
             let swap_max_path = path.join("memory.swap.max");
-            fs::write(&swap_max_path, "0").ok();
+            fs::write(&swap_max_path, "0").with_context(|| {
+                format!("failed to disable swap in {}", swap_max_path.display())
+            })?;
         }
 
         let period = config.cpu_period.unwrap_or(100_000);
