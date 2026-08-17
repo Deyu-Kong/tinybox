@@ -15,6 +15,7 @@ use std::os::unix::io::{BorrowedFd, FromRawFd, IntoRawFd};
 use std::os::unix::net::UnixDatagram;
 use std::path::PathBuf;
 
+use crate::audit::AuditSink;
 use crate::broker;
 use crate::cgroup::{Cgroup, CgroupConfig};
 use crate::landlock;
@@ -40,6 +41,7 @@ pub struct SandboxConfig {
     pub dangerous: bool,
     pub filesystem_policy: Option<Vec<FsRule>>,
     pub network_policy: Option<Vec<NetworkRule>>,
+    pub audit: Option<AuditSink>,
     /// None = unshare all (tinybox default, max isolation). Some(set) = honor
     /// only the listed OCI namespace types ("pid"/"mount"/"uts"/"net"/"ipc"/
     /// "user"/"cgroup").
@@ -99,6 +101,16 @@ where
         pids_limit: config.pids_limit,
     };
     let cgroup = Some(Cgroup::new(&cgroup_config)?);
+    if let Some(audit) = &config.audit {
+        audit.record(
+            "cgroup",
+            "allow",
+            "resources",
+            cgroup_config.name.clone(),
+            Some("resources:ceiling".into()),
+            "cgroup created with requested limits",
+        );
+    }
 
     // Fail fast: validate the rootfs BEFORE forking, so a bad rootfs surfaces
     // as a runtime error (Err → daemon "failed" status) rather than a child
@@ -137,7 +149,8 @@ where
             let broker_thread = broker_host.take().map(|channel| {
                 let rules = config.network_policy.clone().unwrap_or_default();
                 let stop = broker_stop.clone();
-                std::thread::spawn(move || broker::serve(channel, rules, stop))
+                let audit = config.audit.clone();
+                std::thread::spawn(move || broker::serve(channel, rules, stop, audit))
             });
 
             if let Some(ref cg) = cgroup {
@@ -168,7 +181,37 @@ where
             }
             drop(cgroup);
             if !setup_message.is_empty() {
+                if let Some(audit) = &config.audit {
+                    audit.record(
+                        "runtime",
+                        "deny",
+                        "sandbox.setup",
+                        "payload",
+                        None,
+                        setup_message.clone(),
+                    );
+                }
                 return Err(SetupError(setup_message).into());
+            }
+            if let Some(audit) = &config.audit {
+                if let Some(rules) = &config.filesystem_policy {
+                    audit.record(
+                        "landlock",
+                        "allow",
+                        "filesystem.ceiling",
+                        format!("{} rules", rules.len()),
+                        Some("filesystem:ceiling".into()),
+                        "Landlock ruleset installed before payload exec",
+                    );
+                }
+                audit.record(
+                    "runtime",
+                    "allow",
+                    "sandbox.setup",
+                    "payload",
+                    None,
+                    "namespace, filesystem, Landlock, capability and seccomp setup completed",
+                );
             }
             Ok(exit_code_from_status(status))
         }
@@ -486,6 +529,7 @@ mod tests {
             dangerous: false,
             filesystem_policy: None,
             network_policy: None,
+            audit: None,
             namespaces: None,
             cwd: None,
             uid: 0,
@@ -512,6 +556,7 @@ mod tests {
             dangerous: false,
             filesystem_policy: None,
             network_policy: None,
+            audit: None,
             namespaces: Some(vec![NamespaceType::Pid]),
             cwd: None,
             uid: 0,
@@ -538,6 +583,7 @@ mod tests {
             dangerous: false,
             filesystem_policy: None,
             network_policy: None,
+            audit: None,
             namespaces: None,
             cwd: None,
             uid: 0,

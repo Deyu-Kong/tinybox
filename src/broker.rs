@@ -1,3 +1,4 @@
+use crate::audit::AuditSink;
 use crate::policy::NetworkRule;
 use anyhow::{Context, Result};
 use nix::sys::socket::{sendmsg, ControlMessage, MsgFlags};
@@ -9,7 +10,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-pub fn serve(channel: UnixDatagram, rules: Vec<NetworkRule>, stop: Arc<AtomicBool>) -> Result<()> {
+pub fn serve(
+    channel: UnixDatagram,
+    rules: Vec<NetworkRule>,
+    stop: Arc<AtomicBool>,
+    audit: Option<AuditSink>,
+) -> Result<()> {
     channel
         .set_read_timeout(Some(Duration::from_millis(100)))
         .context("failed to configure broker channel")?;
@@ -29,12 +35,38 @@ pub fn serve(channel: UnixDatagram, rules: Vec<NetworkRule>, stop: Arc<AtomicBoo
             return Ok(());
         }
         let request = std::str::from_utf8(&request[..size]).context("invalid broker request")?;
+        let rule_id = rules
+            .iter()
+            .position(|rule| request.trim() == format!("{}:{}", rule.host, rule.port))
+            .map(|index| format!("network:{index}"));
         let response = match connect_allowed(request, &rules) {
             Ok(stream) => {
+                if let Some(audit) = &audit {
+                    audit.record(
+                        "broker",
+                        "allow",
+                        "network.connect",
+                        request.trim(),
+                        rule_id,
+                        "destination matched policy and connected",
+                    );
+                }
                 send_fd(&channel, stream.into_raw_fd())?;
                 continue;
             }
-            Err(error) => format!("DENY:{error}"),
+            Err(error) => {
+                if let Some(audit) = &audit {
+                    audit.record(
+                        "broker",
+                        "deny",
+                        "network.connect",
+                        request.trim(),
+                        rule_id,
+                        error.to_string(),
+                    );
+                }
+                format!("DENY:{error}")
+            }
         };
         channel
             .send(response.as_bytes())

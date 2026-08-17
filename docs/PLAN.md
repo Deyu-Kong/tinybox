@@ -79,7 +79,9 @@ capabilities 的静态骨架，但仍是 **rootful、实验性实现**，不可�
 并以读写、只读、未声明路径和 symlink escape 的 root 验收覆盖。C3 已加入
 私有 netns CONNECT helper 与 host broker：仅精确匹配策略中的 host/port，
 payload 直接 socket 无路由；本地 fixture、拒绝规则与直连失败均有 root 验收。
-C4–C6 尚未实现。
+C4 已加入每 sandbox 1024 条有界审计环、dropped 计数、事件与 summary API；
+runtime、Landlock、cgroup 与 broker allow/deny 决策均产生结构化事件，且不记录
+请求 body、token、文件内容或环境变量。C5–C6 尚未实现。
 
 ---
 

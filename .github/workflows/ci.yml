@@ -26,3 +26,4 @@ jobs:
       - run: sudo ./scripts/test_c1.sh
       - run: sudo ./scripts/test_c2.sh
       - run: sudo ./scripts/test_c3.sh
+      - run: sudo ./scripts/test_c4.sh

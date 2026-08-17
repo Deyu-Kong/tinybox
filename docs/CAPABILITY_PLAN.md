@@ -217,6 +217,12 @@ capability、target、rule ID、reason。不得包含请求 body、token 或文�
 
 **完成门：** 即使没有 eBPF，也能用结构化证据解释一次权限允许或拒绝。
 
+**完成（2026-08-17）：** 每 sandbox 使用容量 1024 的 ring buffer，覆盖时增加
+`dropped_events`；事件包含计划要求的身份、phase、来源、决策、能力、target、
+rule ID 与 reason。daemon 暴露 `/audit` 和 `/audit/summary`，runtime、Landlock、
+cgroup 与 broker 均已接入。C4 不记录 body、token、文件内容或完整环境变量；
+fanotify、seccomp `RET_LOG` 与 SSE 明确保留为后续增强。
+
 ## 10. C5——Phase-scoped 动态权限
 
 - 顶层 descriptor 是不可变 ceiling；每个 phase 是它的子集。
@@ -278,7 +284,7 @@ Documentation。每个 tag 只有 root 验收证据存在且用户明确授权�
 | C1 静态 descriptor | ✅ 完成（2026-08-17） | 非空网络规则按计划 fail closed 到 C3 |
 | C2 FS ceiling | ✅ 完成（2026-08-17） | sandbox payload 已强制；host Agent launcher 留 C6 |
 | C3 网络 broker | ✅ 完成（2026-08-17） | C4 接入结构化网络事件 |
-| C4 统一审计 | ⬜ 未开始 | C1；网络事件依赖 C3 |
+| C4 统一审计 | ✅ 完成（2026-08-17） | fanotify、RET_LOG、SSE 非 C4 阻塞项 |
 | C5 动态 phase | ⬜ 未开始 | C2、C3、C4 |
 | C6 Agent 集成/评测 | ⬜ 未开始 | C5 |
 
@@ -287,5 +293,5 @@ descriptors`、`feat: enforce filesystem capability ceilings`、`feat: route san
 egress through policy broker`、`feat: expose bounded capability audit events`、
 `feat: enforce phase-scoped capabilities`、`feat: integrate agent tools`。
 
-**下一项唯一推荐工作是 C4 统一审计。** C4 证据齐全以前，不开始行为模型、
-eBPF、预热池或动态 grant/revoke。
+**下一项唯一推荐工作是 C5 动态 phase。** C5 证据齐全以前，不开始行为模型、
+eBPF 或预热池。

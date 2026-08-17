@@ -34,10 +34,11 @@ remediation roadmap. Per-phase status uses ✅ works / ⚠️ partial / ❌ brok
 The implementation sequence for Agent-oriented capability management is in
 [docs/CAPABILITY_PLAN.md](docs/CAPABILITY_PLAN.md).
 
-Capability-track status: C0–C3 complete. `--policy` enforces resource and
+Capability-track status: C0–C4 complete. `--policy` enforces resource and
 Landlock filesystem ceilings; allowlisted TCP egress traverses an in-sandbox
-CONNECT helper and host broker while direct sockets remain unrouted. Unified
-audit, dynamic phases, and Agent integration remain unimplemented.
+CONNECT helper and host broker while direct sockets remain unrouted. The daemon
+exposes bounded per-sandbox audit events and summaries. Dynamic phases and Agent
+integration remain unimplemented.
 
 ### Feature Status (honest)
 
@@ -50,7 +51,7 @@ audit, dynamic phases, and Agent integration remain unimplemented.
 | 5 | seccomp + capabilities hardening | ✅ | `clone` flag-masked; escape syscalls removed; bounding set cleared (M1) |
 | 6 | OCI Bundle support (config.json subset) | ⚠️ | typed namespace subset; user namespace explicitly unsupported |
 | 7 | Network namespace + policy broker | ✅ | no NIC; exact host/port CONNECT allowlist; direct sockets unrouted |
-| 8 | HTTP API + daemon mode + Prometheus metrics | ⚠️ | setup failures separated; persistence/auth/log endpoints remain open |
+| 8 | HTTP API + daemon mode + Prometheus metrics | ⚠️ | bounded audit API added; persistence/auth remain open |
 | 9 | Local image management (import/list/remove/run --image) | ⚠️ | no content addressing, no layering, no metadata (P2-3) |
 | 10 | Docker Registry image pull | ⚠️ | in-memory blobs (OOM risk); never fetches config blob; Docker Hub only (P2-4) |
 | 11 | ~~Network bridge + port mapping~~ | 🗑 | removed in M1 (Option A — contradicted design & leaked to host) |

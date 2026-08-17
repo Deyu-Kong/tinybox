@@ -1,3 +1,4 @@
+mod audit;
 mod broker;
 mod cgroup;
 mod daemon;
@@ -261,6 +262,7 @@ fn main() -> Result<()> {
                 network_policy: loaded_policy
                     .as_ref()
                     .map(|policy| policy.descriptor.network.clone()),
+                audit: None,
                 namespaces,
                 cwd,
                 uid,

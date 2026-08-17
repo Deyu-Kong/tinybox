@@ -1,3 +1,4 @@
+use crate::audit::AuditSink;
 use crate::policy::CapabilityDescriptor;
 use crate::sandbox::{run_sandbox_with_pid, SandboxConfig, SetupError};
 use axum::{
@@ -36,6 +37,8 @@ struct Sandbox {
     error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     policy_hash: Option<String>,
+    #[serde(skip)]
+    audit: AuditSink,
 }
 
 #[derive(Deserialize)]
@@ -74,6 +77,8 @@ pub async fn serve(listen: SocketAddr) -> anyhow::Result<()> {
     let app = Router::new()
         .route("/api/sandboxes", post(create).get(list))
         .route("/api/sandboxes/:id", get(get_one).delete(remove))
+        .route("/api/sandboxes/:id/audit", get(audit_events))
+        .route("/api/sandboxes/:id/audit/summary", get(audit_summary))
         .route("/metrics", get(metrics))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind(listen).await?;
@@ -125,6 +130,15 @@ async fn create(
         }
     }
     let id = format!("sb-{}", state.next_id.fetch_add(1, Ordering::Relaxed));
+    let audit = AuditSink::new(id.clone(), policy_hash.clone());
+    audit.record(
+        "runtime",
+        "allow",
+        "policy.load",
+        policy_hash.clone().unwrap_or_else(|| "none".into()),
+        None,
+        "request accepted by control plane",
+    );
     let entry = Sandbox {
         id: id.clone(),
         status: "running".into(),
@@ -132,6 +146,7 @@ async fn create(
         pid: None,
         error: None,
         policy_hash: policy_hash.clone(),
+        audit: audit.clone(),
     };
     state.sandboxes.lock().unwrap().insert(id.clone(), entry);
     let state_clone = state.clone();
@@ -166,6 +181,7 @@ async fn create(
             network_policy: loaded_policy
                 .as_ref()
                 .map(|policy| policy.descriptor.network.clone()),
+            audit: Some(audit),
             namespaces: None,
             cwd: None,
             uid: 0,
@@ -208,6 +224,31 @@ async fn list(State(state): State<AppState>) -> Json<Vec<Sandbox>> {
 async fn get_one(Path(id): Path<String>, State(state): State<AppState>) -> impl IntoResponse {
     match state.sandboxes.lock().unwrap().get(&id).cloned() {
         Some(sb) => (StatusCode::OK, Json(sb)).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+async fn audit_events(Path(id): Path<String>, State(state): State<AppState>) -> impl IntoResponse {
+    let audit = state
+        .sandboxes
+        .lock()
+        .unwrap()
+        .get(&id)
+        .map(|sandbox| sandbox.audit.clone());
+    match audit {
+        Some(audit) => (StatusCode::OK, Json(audit.snapshot())).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn audit_summary(Path(id): Path<String>, State(state): State<AppState>) -> impl IntoResponse {
+    let audit = state
+        .sandboxes
+        .lock()
+        .unwrap()
+        .get(&id)
+        .map(|sandbox| sandbox.audit.clone());
+    match audit {
+        Some(audit) => (StatusCode::OK, Json(audit.summary())).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     }
 }
