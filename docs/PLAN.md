@@ -5,11 +5,10 @@
 状态保持同步；那些文档里的"完成"仅指满足验收标准**且**无下列开放 P0/P1
 项的功能。
 
-> **两条轨。** 本文件管**修复轨（M0–M4）**——把今天声称的功能做到合规。
-> [VISION.md](VISION.md) 管**研究轨（R0–R3）**——让 tinybox 区别于 runc
-> 的 Agent 感知动态能力层。依赖规则：R0 可与 M2 并行；R1 只在 M2 关闭后
-> 开始。两者冲突时，VISION.md 在*前瞻规划*上胜出；PLAN.md 在*当前缺陷
-> 状态*上胜出。
+> **三份职责。** 本文件管当前缺陷与修复轨（M0–M4）；
+> [CAPABILITY_PLAN.md](CAPABILITY_PLAN.md) 是后续模型实施 Agent 权限能力的
+> 活跃计划（C0–C6）；[VISION.md](VISION.md) 管研究动机与长期方向。冲突时：
+> 当前事实听本文件，实施顺序听 CAPABILITY_PLAN，长期目标听 VISION。
 
 约定：
 - `file:line` 引用以提交 `b73c7b1`（phase 13）的代码树为准。
@@ -22,25 +21,50 @@
 
 ## 摘要
 
-| 严重度 | 数量 | 状态 |
+> **2026-08-16 M2 后复审：M2 不应视为完全关闭。** 原 M2 提交确实加入了
+> 对应代码，但复审发现验收与语义仍有缺口：OCI namespace 子集可能在宿主
+> mount namespace 执行初始化；daemon 仍把 child setup/exec 错误记为
+> `completed(exit_code=1)`；特殊文件系统的若干关键 mount 错误被忽略；
+> `--proxy` 没有代理转接，仅注入环境变量；只读 bind volume 没有可靠 remount。
+> 因此 README/AGENTS 的相关能力已降为 ⚠️，在新增回归验收前不得恢复 ✅。
+
+| 原审计分类 | 数量 | 当前状态 |
 |----------|-------|--------|
 | P0（隔离/安全） | 4 | ✅ 全部解决（M1 完成，2026-08-16） |
-| P1（正确性/矛盾） | 5 | ✅ 全部解决（M2 完成：P1-1/1-3/1-4/1-5；P1-2 随 M1） |
-| P2（功能浅薄） | 5 | 1 解决（P2-1 随 M2），4 开放 |
+| P1（正确性/矛盾） | 5 | 实现曾落地；A1/A2 使相关能力重新开放 |
+| P2（功能浅薄） | 5 | P2-1 部分落地但有 A3；其余 4 项开放 |
 | P3（打磨） | 6 | 开放（一处附带已修） |
 
-**P0 隔离漏洞已关闭。** 四个 P0 项在里程碑 M1（2026-08-16）解决：
+**原审计中的四个 P0 已关闭。** 四个 P0 项在里程碑 M1（2026-08-16）解决：
 bridge/veth/NAT 路径被整体删除（Option A——`src/network.rs` 删除，
 `--network`/`-p` flags 移除），沙箱现在**始终** unshare `CLONE_NEWNET`
-使 `--proxy` 成为真隔离（loopback-only + env vars），seccomp 白名单的
+使 `--proxy` 不再共享宿主 netns（隔离 netns + env vars），seccomp 白名单的
 逃逸原语被移除且 `clone` 被限制以禁止 `CLONE_NEW*` flags，capability
 bounding set 经 `PR_CAPBSET_DROP` 清空。
 
-进程隔离骨架（namespaces + overlayfs + cgroups + seccomp + caps）现在对
-`tinybox run` 路径是一道可辩护的屏障。剩余开放项（P1 OCI 字段 honoring、
-P2 rootfs/device 硬化等）是正确性/纵深问题，非逃逸洞。tinybox 仍为
-**rootful** 且缺 `/dev`/`/tmp`/`/sys` 硬化，故尚非生产级屏障——但已不
-泄漏到宿主。
+默认 `tinybox run` 路径具备 namespaces + overlayfs + cgroups + seccomp +
+capabilities 的静态骨架，但仍是 **rootful、实验性实现**，不可描述为已验证的
+生产安全边界。带显式 OCI namespace 子集、`--dangerous`、无 rootfs 的运行
+路径尤其需要单独评估。
+
+### M2 后复审新增的开放项
+
+- **A1（正确性/安全）OCI namespace 子集**：`child_main` 无论是否请求
+  mount namespace 都执行 mount propagation、rootfs 和 `/proc` 初始化；显式
+  `user` namespace 又被静默忽略。必须校验必需 namespace，或只在对应 namespace
+  中执行相关初始化，且拒绝不支持的 `user`。
+- **A2（正确性）daemon 状态**：只有 fork 前错误返回 `Err`；child setup、
+  `chdir`、setuid 或 exec 失败均变成 exit code 1，仍标记 `completed`。需要独立
+  setup-error pipe/protocol。
+- **A3（正确性）特殊文件系统**：device bind、devpts、shm、sys mount 多处
+  `.ok()`；“完整硬化”没有 fail-closed 保证。`/dev/mqueue` 也未实现。
+- **A4（功能）proxy**：实现只有隔离 netns + proxy env；没有 loopback bring-up、
+  veth、socket relay 或其它宿主代理转接。`127.0.0.1:PORT` 指向沙箱自身，故当前
+  代码不能兑现“wget 经宿主 proxy 成功”。
+- **A5（正确性）只读 volume**：bind mount 初次调用附加 `MS_RDONLY`，未执行
+  `MS_REMOUNT|MS_BIND|MS_RDONLY`；只读语义需要修复并以写失败验收。
+- **A6（验证）测试门误导**：非 root 下需要特权的集成测试直接返回，cargo 会
+  报为通过。报告测试结果时必须区分“编译/非特权测试通过”和“root 验收通过”。
 
 ---
 
@@ -292,7 +316,7 @@ P2 rootfs/device 硬化等）是正确性/纵深问题，非逃逸洞。tinybox 
 1. 加本 `PLAN.md`。✅（提交 `0531141`）
 2. 修正 README 徽章/状态与 AGENTS 决策日志反映真实状态。✅（提交
    `0531141`）
-3. 在 README 与 `--help` 加 `WARNING: not a security barrier` 告示。✅
+3. README 已加实验性警告；`--help` 尚无同等警告。⚠️
 
 ### 里程碑 M1——关闭 P0 隔离漏洞 ✅（2026-08-16）
 1. ✅ P0-1 Option A：`src/network.rs` 删除；`--network`/`-p` flags 移除；
@@ -307,7 +331,7 @@ P2 rootfs/device 硬化等）是正确性/纵深问题，非逃逸洞。tinybox 
    Test 3（`--proxy` 无默认路由）；seccomp clone 规则 + 排除 syscall 的
    单测。所有验收门绿。
 
-### 里程碑 M2——让声称的功能真正能用 ✅（2026-08-16）
+### 里程碑 M2——让声称的功能真正能用 ⚠️ 复审后重开（2026-08-16）
 1. ✅ P1-1：honor OCI `linux.namespaces`、`root.readonly`、`process.cwd`、
    `process.user`。
 2. ✅ P1-3：daemon 状态 `{running,completed,failed}` + 失败计数器。
@@ -316,13 +340,12 @@ P2 rootfs/device 硬化等）是正确性/纵深问题，非逃逸洞。tinybox 
 5. ✅ **P2-1 已提前**（原在 M3）：完整 `/dev`、`/tmp`、`/sys` 设置。R0 的
    验收需要真跑 `pip install`，而它需要 `/dev/null`、可写 `/tmp` 等——故
    P2-1 是研究轨首个验收的前置，不是打磨项。
-6. ✅ 验证：`cargo test`（59 测试）+ `cargo clippy -- -D warnings` 干净；
-   phase 1/3/5/6/7/8/13 acceptance 全绿。
+6. ⚠️ 当时记录为 `cargo test`（59 测试）+ clippy 及若干 acceptance 全绿；
+   复审发现测试未覆盖 A1–A5，且非 root 的集成测试会静默跳过。
 
 > **研究轨依赖（见 [VISION.md](VISION.md)）**：R0 可与 M2 并行（插桩
-> 非侵入）。R1 只在 **M2 关闭后**开始——在一个静默忽略
-> `linux.namespaces` 的 OCI 解析器上建动态策略引擎没意义。**M2 现已关闭，
-> R1 可启动。**
+> 非侵入）。R1 只在 **M2 复审项 A1–A5 关闭后**开始；当前不能仅凭已有
+> M2 tag 视为满足。
 
 ### 里程碑 M3——纵深
 1. P2-2：cgroup v2 校验 + 控制器启用。
@@ -368,15 +391,15 @@ P2 rootfs/device 硬化等）是正确性/纵深问题，非逃逸洞。tinybox 
 | Phase | Feature | Status | Open items |
 |-------|---------|--------|------------|
 | 1 | skeleton + CLI + exec | ✅ | — |
-| 2 | namespaces (pid/mount/uts/net) | ✅ | —（NEWNET 现始终 unshare） |
-| 3 | overlayfs + pivot_root | ✅ | —（P2-1 已在 M2 修：/dev /tmp /sys + read-only） |
+| 2 | namespaces (pid/mount/uts/net) | ⚠️ | 默认路径具备；OCI 子集有 A1 |
+| 3 | overlayfs + pivot_root | ⚠️ | 特殊 FS 错误被忽略（A3） |
 | 4 | cgroup limits | ⚠️ | P2-2（无 v2 校验，swap 硬编码） |
 | 5 | seccomp + caps | ✅ | —（P0-3、P0-4 已在 M1 修） |
-| 6 | OCI bundle | ✅ | —（P1-1 已在 M2 修：namespaces/readonly/cwd/user） |
-| 7 | network（proxy-only） | ✅ | —（P0-1、P0-2 已在 M1 修；bridge 移除） |
-| 8 | daemon API | ✅ | —（P1-3、P1-4 已在 M2 修；P2-5 持久化/鉴权仍开放） |
+| 6 | OCI bundle | ⚠️ | 解析部分字段；namespace/user 语义仍有 A1 |
+| 7 | network（isolated + proxy env） | ⚠️ | 无宿主代理转接，不能证明代理可用（A4） |
+| 8 | daemon API | ⚠️ | child setup 失败仍可能记 completed；另有 P2-5（A2） |
 | 9 | local images | ⚠️ | P2-3 |
 | 10 | registry pull | ⚠️ | P2-4 |
 | 11 | ~~network bridge~~ | 🗑 移除 | M1 移除（Option A）；原 P0-1 |
-| 12 | volumes | ✅ | — |
-| 13 | exec | ✅ | —（P1-5 已在 M2 修：setns + PID 校验 + TTY） |
+| 12 | volumes | ⚠️ | 只读 bind 语义未可靠实现（A5） |
+| 13 | exec | ⚠️ | setns + 基础 PID 校验已实现；未分配 PTY，验证覆盖有限 |

@@ -2,18 +2,16 @@
 
 A minimal, secure sandbox runtime for running AI Agents in isolated environments, built from scratch in Rust.
 
-![Phase Progress](https://img.shields.io/badge/phase-13%2F8-yellow)
-![Lines of Code](https://img.shields.io/badge/LOC-2004-orange)
+![Phase Progress](https://img.shields.io/badge/phases-1--13-audited-yellow)
+![Lines of Code](https://img.shields.io/badge/Rust_LOC-2306-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Status](https://img.shields.io/badge/status-M2%20done%2C%20P1%2FP2%20remaining-yellow)
+![Status](https://img.shields.io/badge/status-experimental%2C%20open%20correctness%20gaps-orange)
 
-> ⚠️ **M2 done (2026-08-16): P0/P1 closed, only P2 depth items remain.**
-> tinybox now properly isolates via namespaces + cgroups + seccomp + caps and
-> honors OCI `linux.namespaces`/`root.readonly`/`process.cwd`/`user`; the
-> daemon tracks failed sandboxes and rejects remote `dangerous`; `exec` is
-> `setns`-based with PID validation. Remaining items (P2: cgroup v2
-> validation, content-addressed images, registry streaming, daemon
-> persistence) are depth, not correctness. See [docs/PLAN.md](docs/PLAN.md).
+> ⚠️ **Experimental, rootful runtime; not a production security boundary.**
+> The original M1 P0 findings were fixed, but an M2 re-audit found open
+> correctness gaps in OCI namespace subsets, daemon failure reporting,
+> special-filesystem setup, proxy connectivity, and read-only volumes. See
+> [docs/PLAN.md](docs/PLAN.md) for the authoritative status.
 
 ## Motivation
 
@@ -29,28 +27,29 @@ The project covers all six directions of the Agent Infra JD:
 
 ## Current Status
 
-**13 phases implemented (2000+ lines of Rust). M2 complete (2026-08-16): all
-P0/P1 issues closed; only P2 depth items remain.** See
+**Phases 1–13 have code, but several are partial after the M2 re-audit.** See
 [docs/PLAN.md](docs/PLAN.md) for the authoritative, line-referenced audit and
 remediation roadmap. Per-phase status uses ✅ works / ⚠️ partial / ❌ broken.
+The implementation sequence for Agent-oriented capability management is in
+[docs/CAPABILITY_PLAN.md](docs/CAPABILITY_PLAN.md).
 
 ### Feature Status (honest)
 
 | Phase | Feature | Status | Notes |
 |-------|---------|--------|-------|
 | 1 | Project skeleton + CLI + subprocess execution | ✅ | — |
-| 2 | Namespace isolation (PID/mount/UTS/Net) | ✅ | NEWNET now always unshared (M1) |
-| 3 | Overlayfs rootfs + pivot_root | ✅ | `/dev`/`/tmp`/`/sys` hardened; `--read-only` supported (M2) |
+| 2 | Namespace isolation (PID/mount/UTS/Net) | ⚠️ | default path isolates; OCI subsets need validation |
+| 3 | Overlayfs rootfs + pivot_root | ⚠️ | special-FS setup ignores several mount failures |
 | 4 | cgroup resource limits (CPU/memory/pids) | ⚠️ | no v2 validation, `swap.max` hardcoded, no controller enabling (P2-2) |
 | 5 | seccomp + capabilities hardening | ✅ | `clone` flag-masked; escape syscalls removed; bounding set cleared (M1) |
-| 6 | OCI Bundle support (config.json parsing) | ✅ | honors `linux.namespaces`/`root.readonly`/`process.cwd`/`user` (M2) |
-| 7 | Network namespace + proxy environment | ✅ | `--proxy` now real isolation (loopback-only + env); bridge removed (M1) |
-| 8 | HTTP API + daemon mode + Prometheus metrics | ✅ | extended `CreateRequest`; failed sandboxes tracked; `dangerous` rejected remotely (M2) |
+| 6 | OCI Bundle support (config.json subset) | ⚠️ | fields parse, but namespace/user semantics are incomplete |
+| 7 | Network namespace + proxy environment | ⚠️ | isolated netns and env only; no host-proxy transport |
+| 8 | HTTP API + daemon mode + Prometheus metrics | ⚠️ | pre-fork failures tracked; child setup failures can appear completed |
 | 9 | Local image management (import/list/remove/run --image) | ⚠️ | no content addressing, no layering, no metadata (P2-3) |
 | 10 | Docker Registry image pull | ⚠️ | in-memory blobs (OOM risk); never fetches config blob; Docker Hub only (P2-4) |
 | 11 | ~~Network bridge + port mapping~~ | 🗑 | removed in M1 (Option A — contradicted design & leaked to host) |
-| 12 | Volume mounting (bind mounts) | ✅ | — |
-| 13 | Exec into running containers | ✅ | `setns`-based, namespace-complete, PID-validated, with TTY (M2) |
+| 12 | Volume mounting (bind mounts) | ⚠️ | read-only remount is incomplete |
+| 13 | Exec into running containers | ⚠️ | direct `setns` and basic PID check; reuses a TTY but does not allocate a PTY |
 
 ## Architecture
 
@@ -159,7 +158,7 @@ EXAMPLES:
     tinybox run -- echo "hello"
     tinybox run --root /tmp/alpine-rootfs -- /bin/sh
     tinybox run --image alpine -- /bin/sh
-    tinybox run --proxy http://127.0.0.1:8080 -- wget -q -O- http://example.com
+    tinybox run --proxy http://proxy.example:8080 -- env
     tinybox run -v /host/path:/container/path -- ls /container/path
     tinybox run -v /data:/data:ro -- cat /data/file.txt
     tinybox run --memory 64m -- python3 -c "a = bytearray(200*1024*1024)"
@@ -194,10 +193,8 @@ tinybox implements defense-in-depth with four layers of isolation:
 
 ### 3. Capability Dropping (Phase 5)
 
-Drops dangerous capabilities before exec:
-- `CAP_SYS_ADMIN`, `CAP_NET_ADMIN`, `CAP_SYS_MODULE`
-- `CAP_SYS_RAWIO`, `CAP_SYS_PTRACE`, `CAP_SYS_BOOT`
-- `CAP_SYS_TIME`, `CAP_MKNOD`
+Drops 14 selected dangerous capabilities before exec and from the bounding set;
+see `DANGEROUS_CAPS` in `src/seccomp.rs` for the authoritative list.
 
 ### 4. Seccomp Filtering (Phase 5)
 
@@ -234,23 +231,27 @@ sudo ./scripts/test_phase9.sh
 sudo ./scripts/test_phase10.sh
 ```
 
+When run as a non-root user, privileged integration tests return early and are
+reported as passed. Use the root-only acceptance scripts for runtime claims,
+and report those results separately from unit tests and lint.
+
 ## Development Phases
 
 | Phase | Feature | Lines (Rust) | Status |
 |-------|---------|-------------|--------|
 | 1 | Project skeleton + CLI + subprocess execution | ~150 | ✅ |
-| 2 | Namespace isolation (PID/mount/UTS/Net) | ~200 | ✅ |
-| 3 | Overlayfs rootfs + pivot_root | ~150 | ✅ |
+| 2 | Namespace isolation (PID/mount/UTS/Net) | ~200 | ⚠️ |
+| 3 | Overlayfs rootfs + pivot_root | ~150 | ⚠️ |
 | 4 | cgroup resource limits (CPU/memory/pids) | ~200 | ⚠️ |
 | 5 | seccomp + capabilities hardening | ~250 | ✅ |
-| 6 | OCI Bundle support (config.json parsing) | ~350 | ✅ |
-| 7 | Network namespace + proxy environment | ~250 | ✅ |
-| 8 | HTTP API + daemon mode + Prometheus metrics | ~350 | ✅ |
+| 6 | OCI Bundle support (config.json parsing) | ~350 | ⚠️ |
+| 7 | Network namespace + proxy environment | ~250 | ⚠️ |
+| 8 | HTTP API + daemon mode + Prometheus metrics | ~350 | ⚠️ |
 | 9 | Local image management (import/list/remove) | ~150 | ⚠️ |
 | 10 | Docker Registry image pull | ~150 | ⚠️ |
 | 11 | ~~Network bridge + port mapping~~ | ~200 | 🗑 removed |
-| 12 | Volume mounting (bind mounts) | ~50 | ✅ |
-| 13 | Exec into running containers | ~50 | ✅ |
+| 12 | Volume mounting (bind mounts) | ~50 | ⚠️ |
+| 13 | Exec into running containers | ~50 | ⚠️ |
 
 Status: ✅ works · ⚠️ partial (open P1/P2) · ❌ broken (open P0 or fails
 acceptance) · 🗑 removed. Phase 11 was removed in M1 (Option A) — it
@@ -266,8 +267,8 @@ See [docs/PLAN.md](docs/PLAN.md) for the per-phase open-item mapping.
 All four P0 escape/leak holes are closed:
 - ~~`--network bridge` configures the host instead of the sandbox~~ → the
   bridge/veth/NAT path was **removed** (`src/network.rs` deleted, Option A).
-- ~~`--proxy` is not isolation~~ → the sandbox now **always** unshares
-  `CLONE_NEWNET`; `--proxy` = loopback-only netns + env vars.
+- ~~`--proxy` shared the host netns~~ → fixed: the default path unshares
+  `CLONE_NEWNET`. Proxy connectivity itself remains unimplemented; see below.
 - ~~seccomp allow-list has escape primitives~~ → `clone` is now
   flag-masked (forbids `CLONE_NEW*`); `open_by_handle_at`/`process_vm_*`/
   `perf_event_open`/NUMA-IO setters removed; `CAP_DAC_READ_SEARCH`/
@@ -275,16 +276,23 @@ All four P0 escape/leak holes are closed:
 - ~~capability bounding set never cleared~~ → `drop_capabilities` now calls
   `prctl(PR_CAPBSET_DROP)` for each dangerous cap.
 
-### P1 — Correctness / Contradictions (FIXED in M2, 2026-08-16)
-- ~~OCI support shallow~~ → now honors `linux.namespaces`/`root.readonly`/
-  `process.cwd`/`process.user` (P1-1).
+### Correctness gaps reopened by the M2 re-audit
+- OCI parses `linux.namespaces`/`root.readonly`/`process.cwd`/`process.user`,
+  but mount initialization is not safe for every namespace subset and the
+  requested user namespace is ignored.
 - ~~`ip`/`iptables` silent failure~~ → resolved (network.rs removed in M1).
-- ~~daemon conflates failed/completed~~ → now `failed` status + `tinybox_sandboxes_failed` metric (P1-3).
+- daemon reports pre-fork errors as `failed`, but child setup/exec failures can
+  still be reported as `completed` with exit code 1.
 - ~~daemon `CreateRequest` can't set options~~ → extended with cpus/pids/volumes/hostname/env/root_readonly; `dangerous:true` rejected remotely (P1-4).
-- ~~`exec` is a `nsenter` wrapper with gaps~~ → now `setns`-based, namespace-complete, PID-validated, with TTY (P1-5).
+- `exec` uses direct `setns` and a cgroup-name check, but has no PTY allocator
+  and its privileged acceptance coverage remains limited.
 
 ### P2 — Shallow Features
-- ~~rootfs: no `/dev`, `/tmp`, `/sys`~~ → hardened in M2 (P2-1).
+- rootfs has `/dev`, `/tmp`, empty `/sys`, and `/proc` setup, but several mount
+  failures are ignored and `/dev/mqueue` is absent.
+- `--proxy` only injects environment variables into an isolated netns; no
+  transport connects that netns to a host proxy.
+- read-only bind volumes need a proper bind remount.
 - cgroup: no v2 validation, no controller enabling, `swap.max` hardcoded (P2-2).
 - images: no content addressing, no layering, no metadata (P2-3).
 - registry pull: entire layers loaded into RAM; config blob never fetched; no digest verification; Docker Hub only (P2-4).

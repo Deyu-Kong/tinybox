@@ -4,21 +4,20 @@
 > （P0–P3 问题 + 修复路线图）。docs/PLAN.md 里的各 phase 状态优先于旧
 > 文档里的"✅"：若干 phase 有开放 P0/P1 项，在 docs/PLAN.md 对应里程碑
 > 打 tag 之前不得视为完成。
+> 实现权限描述符、Landlock、网络 broker、审计或动态 phase 时，还必须阅读
+> [docs/CAPABILITY_PLAN.md](docs/CAPABILITY_PLAN.md)，严格按 C0–C6 执行。
 
 ## 项目概览
 
 tinybox 是一个从零用 Rust 实现的 Linux 沙箱运行时，类似 `runc` 但简化、
-聚焦 Agent 工作负载。它分 8 个 phase 增量构建，每个 phase 产出一个可跑、
-可验的交付物。
+聚焦 Agent 工作负载。仓库历史上已推进到 Phase 13；phase 编号是增量历史，
+不是“13/8”的完成比例。
 
-> **⚠️ 安全状态（2026-08-16，M2 之后）：P0/P1 全部关闭，仅余 P2 纵深。**
-> M1 关闭了四个 P0；M2（2026-08-16）关闭了全部 P1：OCI 字段
-> （`linux.namespaces`/`root.readonly`/`process.cwd`/`user`）、daemon 失败
-> 状态追踪、`CreateRequest` 扩展 + 远程 `dangerous` 拒绝、`exec` 走 `setns`
-> + PID 校验，以及 P2-1（`/dev`/`/tmp`/`/sys` 硬化 + `--read-only`）。`tinybox
-> run` 路径现在是可辩护的隔离屏障。剩余 P2 项（cgroup v2 校验、内容寻址
-> 镜像、registry 流式、daemon 持久化）是纵深，非正确性。R1 现可启动。见
-> [docs/PLAN.md](docs/PLAN.md)。
+> **⚠️ 安全状态（2026-08-16，M2 后复审）：实验性、rootful，不是生产安全
+> 边界。** M1 的四个原始 P0 已关闭；但 M2 复审重新发现 OCI namespace
+> 子集、daemon child 失败分类、特殊文件系统 fail-open、proxy 不可达及只读
+> volume 等正确性缺口。任何“✅/已完成”陈述以 [docs/PLAN.md](docs/PLAN.md)
+> 最新复审表为准，不得仅依据 tag 或代码存在判断。
 
 ## 约定
 
@@ -59,10 +58,11 @@ tinybox 是一个从零用 Rust 实现的 Linux 沙箱运行时，类似 `runc` 
 - **单元测试**：`#[cfg(test)] mod tests { ... }` 紧跟各模块
 - **集成测试**：`tests/` 目录，每 phase 一个文件
 - **验收测试**：`scripts/` 下的 shell 脚本，验证各 phase 验收标准
-- 跑测试：`cargo test && cargo clippy -- -D warnings`
+- 跑测试：`cargo test && cargo clippy -- -D warnings`；非 root 时特权集成测试
+  会提前返回，不能据此声称运行时验收通过
 - 跑验收测试：`SUDO_ASKPASS=.sudo-askpass.sh sudo -A ./scripts/test_phaseN.sh`
-- **Sudo 设置**：`.sudo-askpass.sh` 脚本为自动化测试提供 sudo 密码
-  （密码：kdy）
+- **Sudo 设置**：如使用 `.sudo-askpass.sh`，视为本机私密文件，不得提交或
+  在文档、日志中记录密码
 - **WSL2 修复**：若 `sudo` 报 "unable to allocate pty"，跑：
   `sudo mount -t devpts devpts /dev/pts`
 
@@ -142,12 +142,13 @@ tinybox run --oci /tmp/oci-bundle   # → "hello-oci"
 ### Phase 7
 ```bash
 tinybox run -- ping 8.8.8.8         # → network unreachable
-tinybox run --proxy http://127.0.0.1:8080 -- wget -q -O- http://example.com  # → succeeds
+tinybox run --proxy http://proxy.example:8080 -- env  # → proxy env 被注入
 ```
 > ⚠️ **P0-1 / P0-2（已在 M1 解决，2026-08-16）：** bridge 路径被删
 > （Option A），沙箱现在始终 unshare `CLONE_NEWNET`。`--proxy` 现在
-> 提供真隔离：loopback-only netns + env vars。`scripts/test_phase7.sh`
-> Test 3 断言 `--proxy` 模式无默认路由。
+> 提供网络隔离 + env vars。当前没有把隔离 netns 接到宿主 proxy 的 relay；
+> `127.0.0.1` 是沙箱自身，不能声称 wget 可达。`scripts/test_phase7.sh` 只断言
+> 环境变量及无默认路由。
 
 ### Phase 8
 ```bash
@@ -162,7 +163,8 @@ curl http://127.0.0.1:8080/metrics  # → Prometheus metrics
 - 不要实现完整 OCI runtime（不必处理全部 50+ config.json 字段；只实现
   核心 10 个）
 - 不要加 GPU 支持（无 passthrough、无 CUDA）
-- 不要实现镜像拉取（依赖 `docker export` 或既有 rootfs）
+- 不要扩展为完整镜像/容器生态；现有实验性 Docker Hub pull 仅作 Phase 10
+  原型，仍缺流式、digest/config 校验及通用 registry 支持
 - 不要实现多节点编排（仅单机）
 - 不要处理 SELinux 或 AppArmor（seccomp + capabilities 是 v1.0 LSM 故事；
   **Landlock 是研究轨显式追加**的 FS 能力维度——见
@@ -334,8 +336,9 @@ curl http://127.0.0.1:8080/metrics  # → Prometheus metrics
 - **P2-1**：`rootfs.rs` 加 `setup_special_fs`，pivot 前在 merged 下挂
   `/dev`（tmpfs + bind 设备节点 + devpts + shm）、`/tmp`（size-capped tmpfs）、
   `/sys`（空只读 tmpfs 防宿主信息泄漏）、`/proc`。
-- **验证**：`cargo test`（59 测试）+ `cargo clippy -- -D warnings` 干净；
-  phase 1/3/5/6/7/8/13 acceptance 全绿。**M2 关闭，研究轨 R1 可启动。**
+- **复审结论**：代码与单元/lint 门存在，但原验收未覆盖 namespace 子集的
+  mount 安全、child setup 错误、proxy 连通、特殊 mount fail-closed、只读
+  bind remount；M2 在 PLAN 中已重开，R1 前置条件尚未重新满足。
 
 ## 相关项目
 

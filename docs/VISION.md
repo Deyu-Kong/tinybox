@@ -2,9 +2,10 @@
 
 > **北极星文档。** 本文件定义 tinybox 作为研究制品*为何存在*、
 > *要成为什么*。它是前瞻的、愿景性的。要读今天缺陷的逐行审计与修复
-> 轨，看 [PLAN.md](PLAN.md)（里程碑 M0–M4）。要看开发约定与决策日志，
-> 读 [../AGENTS.md](../AGENTS.md)。当 VISION.md 与 PLAN.md 冲突时，
-> VISION.md 在*前瞻规划*上胜出；PLAN.md 在*当前缺陷状态*上胜出。
+> 轨，看 [PLAN.md](PLAN.md)（里程碑 M0–M4）。实际实施顺序与验收门见
+> [CAPABILITY_PLAN.md](CAPABILITY_PLAN.md)（C0–C6）；开发约定与决策日志
+> 见 [../AGENTS.md](../AGENTS.md)。冲突时：PLAN 管当前事实，
+> CAPABILITY_PLAN 管实施顺序，本文管长期方向。
 
 状态：**草案，2026-08-16。** 打上 `vision-v1` 标签后即为定稿。
 
@@ -314,7 +315,7 @@ RQ4 是延伸目标，若被肯定回答，就是本项目对该领域的真正�
 
 ---
 
-## 5. 现状（诚实，截至 2026-08-16 M1 之后）
+## 5. 现状（诚实，截至 2026-08-16 M2 后复审）
 
 ### 已建（静态隔离骨架）
 
@@ -326,17 +327,17 @@ RQ4 是延伸目标，若被肯定回答，就是本项目对该领域的真正�
   9 个逃逸/干扰 syscall 已删。
 - capabilities：14 个危险 cap 下调 + bounding set 经
   `PR_CAPBSET_DROP` 清空。
-- OCI `config.json` 解析（子集——见 PLAN.md P1-1）。
+- OCI `config.json` 解析（字段子集；namespace/user 语义仍有开放缺口）。
 - axum HTTP 控制面：`POST/GET/DELETE /api/sandboxes`、`GET /metrics`。
 - Docker registry 镜像拉取 + 本地镜像管理。
-- `tinybox exec` 进入运行中沙箱（nsenter 包装——P1-5）。
+- `tinybox exec` 通过直接 `setns` 进入目标 namespace，并做基础 cgroup 名称校验。
 
-### 里程碑 M1 已关闭（2026-08-16）
+### 修复轨状态
 
-四个 P0 隔离漏洞全部解决：无 NEWNET 泄漏、clone flag 已屏蔽、逃逸
-syscall 已删、bounding set 已清空。`tinybox run` 路径现在是一道可
-辩护的隔离屏障（仍为 rootful，`/dev`/`/tmp`/`/sys` 硬化未完——见
-P2-1）。
+M1 的四个原始 P0 已解决：无 bridge 宿主泄漏、clone namespace flags 已
+屏蔽、逃逸 syscall 已删、bounding set 已清空。M2 加入了 OCI 字段、特殊
+文件系统、daemon 状态和 setns exec，但后续复审发现这些路径仍有正确性与
+验收缺口；当前是 rootful 实验性骨架，不是生产安全边界。详见 PLAN.md A1–A6。
 
 ### 未建（研究核心）
 
@@ -356,19 +357,18 @@ P2-1）。
 两条轨并行，互相参照：
 
 - **修复轨（M0–M4，见 [PLAN.md](PLAN.md)）**——把今天声称的功能做到
-  合规。已完成到 M1。
+  合规。M1 已完成；M2 在复审后重开。
 - **研究轨（R0–R3，本文档）**——构建让 tinybox 区别于 runc 的
   Agent 感知层。
 
-依赖规则：**R0 可与 M2 并行**（插桩非侵入，不依赖 M2 的正确性修复）。
-**R1 只在 M2 关闭后开始**——在一个静默忽略 `linux.namespaces` 的
-OCI 解析器上建动态策略引擎没意义。
+依赖规则：**R0 可与 M2 并行**。**R1 只在 M2 复审项 A1–A5 关闭后开始**；
+不能仅以已有 M2 tag 作为前置条件满足的证据。
 
 ### 修复轨（PLAN.md M0–M4——摘要，详见 PLAN.md）
 
 - M0 ✅ 诚实基线
 - M1 ✅ P0 隔离漏洞关闭（2026-08-16）
-- M2——让声称的功能真正能用（P1-1 OCI 字段、P2-1 `/dev`/`/tmp`/`/sys`
+- M2 ⚠️ 复审后重开——曾加入 P1-1 OCI 字段、P2-1 `/dev`/`/tmp`/`/sys`
   已提前至此、P1-3 daemon 状态、P1-4 CreateRequest、P1-5 exec 走 `setns`）
 - M3——纵深（P2-2 cgroup v2 校验、P2-3/P2-4 内容寻址镜像 + registry
   流式拉取、P2-5 daemon 持久化 + 日志 + 鉴权）
@@ -537,8 +537,9 @@ syscall、每个触碰的 FS 路径、每个联系的网络端点。
   内核原语的 Agent 感知动态能力隔离**，明确*不用* MicroVM 虚拟化。
 - **里程碑命名空间**：研究轨用 **R0–R3**（本文档），避免与 PLAN.md
   修复轨的 **M0–M4** 冲突。
-- **依赖规则**：R0 可与 M2 并行；R1 在 M2 关闭后开始。
-- **诚实基线**：今天的代码树（M1 后）是一个可辩护的*静态*隔离骨架。
+- **依赖规则**：R0 可与 M2 并行；R1 在 M2 复审项 A1–A5 关闭后开始。
+- **诚实基线**：今天的代码树是 rootful、实验性的*静态*隔离骨架，仍有
+  PLAN.md A1–A6；不得表述为生产安全边界。
   研究核心（R0–R1）尚未建，是把项目从"runc 子集"抬升为"Agent 沙箱"
   的东西。
 - **延伸标记**：R4（结果证明）、R5（rootless）、R6（阶段预测式策略
