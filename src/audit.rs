@@ -116,6 +116,10 @@ impl AuditSink {
             capabilities,
         }
     }
+
+    pub fn set_phase(&self, phase: &str) {
+        self.0.lock().unwrap().phase = phase.into();
+    }
 }
 
 #[cfg(test)]

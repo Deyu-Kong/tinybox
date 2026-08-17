@@ -89,6 +89,21 @@ impl Cgroup {
         Ok(())
     }
 
+    pub fn update_resources(path: &Path, memory: u64, cpus: f64, pids: u64) -> Result<()> {
+        if !path.is_dir() {
+            anyhow::bail!("sandbox cgroup is not ready");
+        }
+        fs::write(path.join("memory.max"), memory.to_string())
+            .context("failed to update memory.max")?;
+        fs::write(
+            path.join("cpu.max"),
+            format!("{} 100000", (cpus * 100_000.0) as u64),
+        )
+        .context("failed to update cpu.max")?;
+        fs::write(path.join("pids.max"), pids.to_string()).context("failed to update pids.max")?;
+        Ok(())
+    }
+
     pub fn cleanup(&self) {
         let _ = fs::remove_dir(&self.path);
     }

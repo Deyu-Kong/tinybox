@@ -216,6 +216,12 @@ fn main() -> Result<()> {
                     None
                 }
             };
+            if loaded_policy
+                .as_ref()
+                .is_some_and(|policy| !policy.descriptor.phases.is_empty())
+            {
+                anyhow::bail!("phase policies require daemon mode and its control API");
+            }
             let memory_bytes = match memory {
                 Some(s) => Some(parse_memory(&s)?),
                 None => None,
@@ -243,6 +249,7 @@ fn main() -> Result<()> {
                 eprintln!("tinybox policy: {}", policy.hash);
             }
             let config = SandboxConfig {
+                cgroup_name: None,
                 command,
                 hostname,
                 rootfs: root.map(std::path::PathBuf::from),
@@ -259,9 +266,9 @@ fn main() -> Result<()> {
                 filesystem_policy: loaded_policy
                     .as_ref()
                     .map(|policy| policy.descriptor.filesystem.clone()),
-                network_policy: loaded_policy
-                    .as_ref()
-                    .map(|policy| policy.descriptor.network.clone()),
+                network_policy: loaded_policy.as_ref().map(|policy| {
+                    std::sync::Arc::new(std::sync::RwLock::new(policy.descriptor.network.clone()))
+                }),
                 audit: None,
                 namespaces,
                 cwd,

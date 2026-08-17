@@ -7,12 +7,12 @@ use std::net::{IpAddr, TcpStream, ToSocketAddrs};
 use std::os::fd::{AsRawFd, IntoRawFd};
 use std::os::unix::net::UnixDatagram;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 pub fn serve(
     channel: UnixDatagram,
-    rules: Vec<NetworkRule>,
+    rules: Arc<RwLock<Vec<NetworkRule>>>,
     stop: Arc<AtomicBool>,
     audit: Option<AuditSink>,
 ) -> Result<()> {
@@ -35,11 +35,12 @@ pub fn serve(
             return Ok(());
         }
         let request = std::str::from_utf8(&request[..size]).context("invalid broker request")?;
-        let rule_id = rules
+        let current_rules = rules.read().unwrap().clone();
+        let rule_id = current_rules
             .iter()
             .position(|rule| request.trim() == format!("{}:{}", rule.host, rule.port))
             .map(|index| format!("network:{index}"));
-        let response = match connect_allowed(request, &rules) {
+        let response = match connect_allowed(request, &current_rules) {
             Ok(stream) => {
                 if let Some(audit) = &audit {
                     audit.record(

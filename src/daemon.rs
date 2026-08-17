@@ -1,5 +1,6 @@
 use crate::audit::AuditSink;
-use crate::policy::CapabilityDescriptor;
+use crate::cgroup::Cgroup;
+use crate::policy::{CapabilityDescriptor, NetworkRule};
 use crate::sandbox::{run_sandbox_with_pid, SandboxConfig, SetupError};
 use axum::{
     extract::{Path, State},
@@ -37,8 +38,17 @@ struct Sandbox {
     error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     policy_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    phase: Option<String>,
+    generation: u64,
     #[serde(skip)]
     audit: AuditSink,
+    #[serde(skip)]
+    descriptor: Option<CapabilityDescriptor>,
+    #[serde(skip)]
+    network_policy: Option<Arc<std::sync::RwLock<Vec<NetworkRule>>>>,
+    #[serde(skip)]
+    cgroup_path: PathBuf,
 }
 
 #[derive(Deserialize)]
@@ -69,6 +79,13 @@ struct CreateRequest {
     policy: Option<CapabilityDescriptor>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PhaseRequest {
+    phase: String,
+    expected_generation: u64,
+}
+
 pub async fn serve(listen: SocketAddr) -> anyhow::Result<()> {
     let state = AppState {
         sandboxes: Arc::new(Mutex::new(HashMap::new())),
@@ -79,6 +96,7 @@ pub async fn serve(listen: SocketAddr) -> anyhow::Result<()> {
         .route("/api/sandboxes/:id", get(get_one).delete(remove))
         .route("/api/sandboxes/:id/audit", get(audit_events))
         .route("/api/sandboxes/:id/audit/summary", get(audit_summary))
+        .route("/api/sandboxes/:id/phase", post(change_phase))
         .route("/metrics", get(metrics))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind(listen).await?;
@@ -130,7 +148,24 @@ async fn create(
         }
     }
     let id = format!("sb-{}", state.next_id.fetch_add(1, Ordering::Relaxed));
+    let descriptor = loaded_policy
+        .as_ref()
+        .map(|policy| policy.descriptor.clone());
+    let initial_phase = descriptor
+        .as_ref()
+        .and_then(|policy| policy.phases.first())
+        .cloned();
+    let active_network = initial_phase
+        .as_ref()
+        .map(|phase| phase.network.clone())
+        .or_else(|| descriptor.as_ref().map(|policy| policy.network.clone()));
+    let network_policy = active_network.map(|rules| Arc::new(std::sync::RwLock::new(rules)));
+    let cgroup_name = format!("tinybox-{id}");
+    let cgroup_path = PathBuf::from("/sys/fs/cgroup").join(&cgroup_name);
     let audit = AuditSink::new(id.clone(), policy_hash.clone());
+    if let Some(phase) = &initial_phase {
+        audit.set_phase(&phase.name);
+    }
     audit.record(
         "runtime",
         "allow",
@@ -146,16 +181,24 @@ async fn create(
         pid: None,
         error: None,
         policy_hash: policy_hash.clone(),
+        phase: initial_phase.as_ref().map(|phase| phase.name.clone()),
+        generation: 0,
         audit: audit.clone(),
+        descriptor: descriptor.clone(),
+        network_policy: network_policy.clone(),
+        cgroup_path,
     };
     state.sandboxes.lock().unwrap().insert(id.clone(), entry);
+    let initial_phase_name = initial_phase.as_ref().map(|phase| phase.name.clone());
     let state_clone = state.clone();
     let id_clone = id.clone();
     tokio::task::spawn_blocking(move || {
-        let policy_resources = loaded_policy
+        let policy_resources = initial_phase
             .as_ref()
-            .map(|policy| &policy.descriptor.resources);
+            .map(|phase| &phase.resources)
+            .or_else(|| descriptor.as_ref().map(|policy| &policy.resources));
         let config = SandboxConfig {
+            cgroup_name: Some(cgroup_name),
             command: req.command,
             hostname: req.hostname,
             rootfs: Some(PathBuf::from(req.rootfs)),
@@ -178,9 +221,7 @@ async fn create(
             filesystem_policy: loaded_policy
                 .as_ref()
                 .map(|policy| policy.descriptor.filesystem.clone()),
-            network_policy: loaded_policy
-                .as_ref()
-                .map(|policy| policy.descriptor.network.clone()),
+            network_policy,
             audit: Some(audit),
             namespaces: None,
             cwd: None,
@@ -214,7 +255,9 @@ async fn create(
     });
     (
         StatusCode::ACCEPTED,
-        Json(serde_json::json!({"id": id, "status": "running", "policy_hash": policy_hash})),
+        Json(
+            serde_json::json!({"id": id, "status": "running", "policy_hash": policy_hash, "phase": initial_phase_name, "generation": 0}),
+        ),
     )
 }
 
@@ -251,6 +294,89 @@ async fn audit_summary(Path(id): Path<String>, State(state): State<AppState>) ->
         Some(audit) => (StatusCode::OK, Json(audit.summary())).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     }
+}
+
+async fn change_phase(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+    Json(request): Json<PhaseRequest>,
+) -> impl IntoResponse {
+    let mut sandboxes = state.sandboxes.lock().unwrap();
+    let Some(sandbox) = sandboxes.get_mut(&id) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let deny = |reason: String, audit: &AuditSink| {
+        audit.record(
+            "control",
+            "deny",
+            "phase.transition",
+            request.phase.clone(),
+            None,
+            reason.clone(),
+        );
+        (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": reason})),
+        )
+            .into_response()
+    };
+    if sandbox.status != "running" {
+        return deny("sandbox is not running".into(), &sandbox.audit);
+    }
+    if request.expected_generation != sandbox.generation {
+        return deny("phase generation mismatch".into(), &sandbox.audit);
+    }
+    let Some(descriptor) = &sandbox.descriptor else {
+        return deny("sandbox has no phase policy".into(), &sandbox.audit);
+    };
+    let Some(current_name) = &sandbox.phase else {
+        return deny("sandbox has no active phase".into(), &sandbox.audit);
+    };
+    let Some(current) = descriptor
+        .phases
+        .iter()
+        .find(|phase| &phase.name == current_name)
+    else {
+        return deny("active phase is invalid".into(), &sandbox.audit);
+    };
+    if !current.next.contains(&request.phase) {
+        return deny("phase transition is not allowed".into(), &sandbox.audit);
+    }
+    let next = descriptor
+        .phases
+        .iter()
+        .find(|phase| phase.name == request.phase)
+        .expect("validated phase graph");
+    if let Err(error) = Cgroup::update_resources(
+        &sandbox.cgroup_path,
+        next.resources.memory_bytes,
+        next.resources.cpus,
+        next.resources.pids,
+    ) {
+        return deny(format!("resource update failed: {error:#}"), &sandbox.audit);
+    }
+    if let Some(network) = &sandbox.network_policy {
+        *network.write().unwrap() = next.network.clone();
+    }
+    sandbox.phase = Some(next.name.clone());
+    sandbox.generation += 1;
+    sandbox.audit.set_phase(&next.name);
+    sandbox.audit.record(
+        "control",
+        "allow",
+        "phase.transition",
+        next.name.clone(),
+        Some(format!("phase:{}", next.name)),
+        "phase and resource policy updated",
+    );
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "phase": sandbox.phase,
+            "generation": sandbox.generation
+        })),
+    )
+        .into_response()
 }
 async fn remove(Path(id): Path<String>, State(state): State<AppState>) -> StatusCode {
     let mut sandboxes = state.sandboxes.lock().unwrap();

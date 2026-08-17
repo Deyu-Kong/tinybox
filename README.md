@@ -34,11 +34,12 @@ remediation roadmap. Per-phase status uses ✅ works / ⚠️ partial / ❌ brok
 The implementation sequence for Agent-oriented capability management is in
 [docs/CAPABILITY_PLAN.md](docs/CAPABILITY_PLAN.md).
 
-Capability-track status: C0–C4 complete. `--policy` enforces resource and
+Capability-track status: C0–C5 complete. `--policy` enforces resource and
 Landlock filesystem ceilings; allowlisted TCP egress traverses an in-sandbox
 CONNECT helper and host broker while direct sockets remain unrouted. The daemon
-exposes bounded per-sandbox audit events and summaries. Dynamic phases and Agent
-integration remain unimplemented.
+exposes bounded per-sandbox audit events and summaries. Daemon policies can use
+CAS-protected phase transitions to atomically replace broker rules and cgroup
+limits. Agent wrappers and host-side enforcement remain unimplemented.
 
 ### Feature Status (honest)
 

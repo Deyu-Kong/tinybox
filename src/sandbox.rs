@@ -14,6 +14,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::io::{BorrowedFd, FromRawFd, IntoRawFd};
 use std::os::unix::net::UnixDatagram;
 use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 
 use crate::audit::AuditSink;
 use crate::broker;
@@ -26,6 +27,7 @@ use crate::rootfs::{mount_volumes, RootfsConfig};
 use crate::seccomp::{apply_seccomp_filter, drop_capabilities};
 
 pub struct SandboxConfig {
+    pub cgroup_name: Option<String>,
     pub command: Vec<String>,
     pub hostname: Option<String>,
     pub rootfs: Option<PathBuf>,
@@ -40,7 +42,7 @@ pub struct SandboxConfig {
     pub pids_limit: Option<u64>,
     pub dangerous: bool,
     pub filesystem_policy: Option<Vec<FsRule>>,
-    pub network_policy: Option<Vec<NetworkRule>>,
+    pub network_policy: Option<Arc<RwLock<Vec<NetworkRule>>>>,
     pub audit: Option<AuditSink>,
     /// None = unshare all (tinybox default, max isolation). Some(set) = honor
     /// only the listed OCI namespace types ("pid"/"mount"/"uts"/"net"/"ipc"/
@@ -93,7 +95,10 @@ where
     // (b) it lets the daemon kill/track every sandbox by cgroup. The cost is
     // one mkdir in /sys/fs/cgroup per sandbox.
     let cgroup_config = CgroupConfig {
-        name: format!("tinybox-{}", std::process::id()),
+        name: config
+            .cgroup_name
+            .clone()
+            .unwrap_or_else(|| format!("tinybox-{}", std::process::id())),
         memory: config.memory,
         cpus: config.cpus,
         cpu_quota: config.cpu_quota,
@@ -132,7 +137,7 @@ where
     let setup_read_fd = setup_read_fd.into_raw_fd();
     let setup_write_fd = setup_write_fd.into_raw_fd();
     let (mut broker_host, mut broker_child) = match &config.network_policy {
-        Some(rules) if !rules.is_empty() => {
+        Some(_) => {
             let (host, child) = UnixDatagram::pair().context("failed to create broker channel")?;
             (Some(host), Some(child))
         }
@@ -147,7 +152,7 @@ where
             drop(broker_child.take());
             let broker_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let broker_thread = broker_host.take().map(|channel| {
-                let rules = config.network_policy.clone().unwrap_or_default();
+                let rules = config.network_policy.clone().unwrap();
                 let stop = broker_stop.clone();
                 let audit = config.audit.clone();
                 std::thread::spawn(move || broker::serve(channel, rules, stop, audit))
@@ -514,6 +519,7 @@ mod tests {
     #[test]
     fn test_empty_command() {
         let config = SandboxConfig {
+            cgroup_name: None,
             command: vec![],
             hostname: None,
             rootfs: None,
@@ -541,6 +547,7 @@ mod tests {
     #[test]
     fn explicit_namespaces_require_mount_namespace() {
         let config = SandboxConfig {
+            cgroup_name: None,
             command: vec!["true".into()],
             hostname: None,
             rootfs: None,
@@ -568,6 +575,7 @@ mod tests {
     #[test]
     fn volumes_require_isolated_rootfs() {
         let config = SandboxConfig {
+            cgroup_name: None,
             command: vec!["true".into()],
             hostname: None,
             rootfs: None,

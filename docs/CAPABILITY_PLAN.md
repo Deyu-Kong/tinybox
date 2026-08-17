@@ -237,6 +237,14 @@ fanotify、seccomp `RET_LOG` 与 SSE 明确保留为后续增强。
 验收：同一 sandbox 在 install phase 可访问本地 package fixture；切换 build 后
 立即拒绝；资源同步变化。伪造 marker、重放 generation、越过 ceiling 均失败并审计。
 
+**完成（2026-08-17）：** descriptor 编译时校验 phase 名、next graph、网络与资源
+均不越过顶层 ceiling；daemon 以首个 phase 启动，并通过带
+`expected_generation` 的 `/phase` API 执行 CAS 转换。成功转换更新共享 broker
+allowlist、cgroup memory/CPU/pids 与审计 phase；伪造 next、重放 generation 和
+运行结束后的请求 fail closed 并审计。Landlock ceiling 在 v1 中保持不变；双向
+FS 授权和 syscall 放宽仍明确不支持。控制面仅存在宿主 daemon，私有 netns payload
+无到达路径；daemon 本身的多租户认证仍是独立生产化工作，不能宣称已解决。
+
 ## 11. C6——Agent 集成与研究证据
 
 - 提供 wrapper，将 bash/python/compiler/test 路由到 tinybox，同时保持
@@ -285,7 +293,7 @@ Documentation。每个 tag 只有 root 验收证据存在且用户明确授权�
 | C2 FS ceiling | ✅ 完成（2026-08-17） | sandbox payload 已强制；host Agent launcher 留 C6 |
 | C3 网络 broker | ✅ 完成（2026-08-17） | C4 接入结构化网络事件 |
 | C4 统一审计 | ✅ 完成（2026-08-17） | fanotify、RET_LOG、SSE 非 C4 阻塞项 |
-| C5 动态 phase | ⬜ 未开始 | C2、C3、C4 |
+| C5 动态 phase | ✅ 完成（2026-08-17） | FS ceiling 固定；daemon 多租户认证未实现 |
 | C6 Agent 集成/评测 | ⬜ 未开始 | C5 |
 
 建议提交顺序：`fix: make sandbox setup fail closed`、`feat: add static capability
@@ -293,5 +301,5 @@ descriptors`、`feat: enforce filesystem capability ceilings`、`feat: route san
 egress through policy broker`、`feat: expose bounded capability audit events`、
 `feat: enforce phase-scoped capabilities`、`feat: integrate agent tools`。
 
-**下一项唯一推荐工作是 C5 动态 phase。** C5 证据齐全以前，不开始行为模型、
-eBPF 或预热池。
+**下一项唯一推荐工作是 C6 Agent 集成与研究证据。** 不引入行为模型、eBPF 或
+预热池；先交付可复现 wrapper、攻击测试和基准脚本。

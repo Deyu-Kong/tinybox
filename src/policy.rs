@@ -34,14 +34,14 @@ pub enum FsAccess {
     ReadWrite,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkRule {
     pub host: String,
     pub port: u16,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ResourcePolicy {
     pub memory_bytes: u64,
@@ -53,6 +53,11 @@ pub struct ResourcePolicy {
 #[serde(deny_unknown_fields)]
 pub struct PhasePolicy {
     pub name: String,
+    #[serde(default)]
+    pub network: Vec<NetworkRule>,
+    pub resources: ResourcePolicy,
+    #[serde(default)]
+    pub next: Vec<String>,
 }
 
 pub struct LoadedPolicy {
@@ -105,11 +110,43 @@ impl CapabilityDescriptor {
                 anyhow::bail!("network port must be positive");
             }
         }
-        if !self.phases.is_empty() {
-            anyhow::bail!("phase policies require C5 dynamic policy enforcement");
+        let mut phase_names = std::collections::HashSet::new();
+        for phase in &self.phases {
+            if phase.name.is_empty() || !phase_names.insert(&phase.name) {
+                anyhow::bail!("phase names must be non-empty and unique");
+            }
+            validate_resources(&phase.resources)?;
+            if phase.resources.memory_bytes > self.resources.memory_bytes
+                || phase.resources.cpus > self.resources.cpus
+                || phase.resources.pids > self.resources.pids
+            {
+                anyhow::bail!("phase {} exceeds the resource ceiling", phase.name);
+            }
+            for rule in &phase.network {
+                validate_host(&rule.host)?;
+                if !self.network.contains(rule) {
+                    anyhow::bail!("phase {} exceeds the network ceiling", phase.name);
+                }
+            }
+        }
+        for phase in &self.phases {
+            if phase.next.iter().any(|next| !phase_names.contains(next)) {
+                anyhow::bail!("phase {} references an unknown next phase", phase.name);
+            }
         }
         Ok(())
     }
+}
+
+fn validate_resources(resources: &ResourcePolicy) -> Result<()> {
+    if resources.memory_bytes == 0
+        || !resources.cpus.is_finite()
+        || resources.cpus <= 0.0
+        || resources.pids == 0
+    {
+        anyhow::bail!("phase resources must be finite and positive");
+    }
+    Ok(())
 }
 
 fn validate_absolute_normalized_path(path: &Path) -> Result<()> {
@@ -202,6 +239,38 @@ mod tests {
     fn rejects_invalid_resources() {
         let mut policy = offline_policy();
         policy.resources.cpus = f64::NAN;
+        assert!(policy.compile().is_err());
+    }
+
+    #[test]
+    fn validates_phase_graph_and_ceilings() {
+        let mut policy = offline_policy();
+        policy.network.push(NetworkRule {
+            host: "example.com".into(),
+            port: 443,
+        });
+        policy.phases.push(PhasePolicy {
+            name: "install".into(),
+            network: policy.network.clone(),
+            resources: ResourcePolicy {
+                memory_bytes: 256 * 1024 * 1024,
+                cpus: 0.5,
+                pids: 25,
+            },
+            next: vec!["build".into()],
+        });
+        policy.phases.push(PhasePolicy {
+            name: "build".into(),
+            network: Vec::new(),
+            resources: ResourcePolicy {
+                memory_bytes: 128 * 1024 * 1024,
+                cpus: 0.25,
+                pids: 10,
+            },
+            next: Vec::new(),
+        });
+        assert!(policy.clone().compile().is_ok());
+        policy.phases[0].next = vec!["missing".into()];
         assert!(policy.compile().is_err());
     }
 }
