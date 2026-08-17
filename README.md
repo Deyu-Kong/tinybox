@@ -34,12 +34,29 @@ remediation roadmap. Per-phase status uses ✅ works / ⚠️ partial / ❌ brok
 The implementation sequence for Agent-oriented capability management is in
 [docs/CAPABILITY_PLAN.md](docs/CAPABILITY_PLAN.md).
 
-Capability-track status: C0–C5 complete. `--policy` enforces resource and
+Capability-track status: C0–C6 complete. `--policy` enforces resource and
 Landlock filesystem ceilings; allowlisted TCP egress traverses an in-sandbox
 CONNECT helper and host broker while direct sockets remain unrouted. The daemon
 exposes bounded per-sandbox audit events and summaries. Daemon policies can use
 CAS-protected phase transitions to atomically replace broker rules and cgroup
-limits. Agent wrappers and host-side enforcement remain unimplemented.
+limits. `scripts/tinybox-agent-tool` routes high-risk tools into tinybox, while
+`tinybox agent-host` applies the same immutable FS ceiling to a host Agent.
+
+Agent integration examples:
+
+```bash
+TINYBOX_POLICY=/orchestrator/policies/task.json \
+  TINYBOX_BIN=./target/release/tinybox \
+  ./scripts/tinybox-agent-tool bash -lc 'cargo test'
+
+tinybox agent-host --policy /orchestrator/policies/task.json -- agent-command
+sudo ./scripts/run_capability_workloads.sh
+sudo ./scripts/benchmark_capability.sh 20
+```
+
+Keep the selected policy outside Agent-writable paths. The host launcher enforces
+only the immutable filesystem ceiling; high-risk execution still belongs in the
+sandbox wrapper.
 
 ### Feature Status (honest)
 
@@ -142,6 +159,7 @@ sudo ./target/release/tinybox run --dangerous -- /bin/sh
 tinybox run [OPTIONS] -- <COMMAND>...
 tinybox daemon [--listen <ADDRESS>]
 tinybox exec --pid <PID> -- <COMMAND>...
+tinybox agent-host --policy <PATH> -- <AGENT>...
 ```
 ```text
 USAGE:
@@ -156,8 +174,8 @@ OPTIONS:
     --cpu-period <MICROS>   CPU period in microseconds (default: 100000)
     --pids-limit <NUM>      Maximum number of processes
     --dangerous             Disable seccomp and capability restrictions
-    --proxy <URL>           HTTP proxy (sandbox netns is loopback-only; proxy
-                            env vars are set for cooperating clients)
+    --policy <PATH>         Capability descriptor; network uses the policy broker
+    --proxy <URL>           Legacy proxy environment injection only
     -v, --volume <VOLUME>   Bind mount volume (host:container[:ro])
     --oci <PATH>            OCI bundle path (Phase 6)
     --image <NAME>          Run from imported image (Phase 9)
@@ -166,7 +184,7 @@ EXAMPLES:
     tinybox run -- echo "hello"
     tinybox run --root /tmp/alpine-rootfs -- /bin/sh
     tinybox run --image alpine -- /bin/sh
-    tinybox run --proxy http://proxy.example:8080 -- env
+    tinybox run --policy ./policy.json -- curl https://allowed.example
     tinybox run -v /host/path:/container/path -- ls /container/path
     tinybox run -v /data:/data:ro -- cat /data/file.txt
     tinybox run --memory 64m -- python3 -c "a = bytearray(200*1024*1024)"
@@ -248,17 +266,17 @@ and report those results separately from unit tests and lint.
 | Phase | Feature | Lines (Rust) | Status |
 |-------|---------|-------------|--------|
 | 1 | Project skeleton + CLI + subprocess execution | ~150 | ✅ |
-| 2 | Namespace isolation (PID/mount/UTS/Net) | ~200 | ⚠️ |
-| 3 | Overlayfs rootfs + pivot_root | ~150 | ⚠️ |
+| 2 | Namespace isolation (PID/mount/UTS/Net) | ~200 | ✅ |
+| 3 | Overlayfs rootfs + pivot_root | ~150 | ✅ |
 | 4 | cgroup resource limits (CPU/memory/pids) | ~200 | ⚠️ |
 | 5 | seccomp + capabilities hardening | ~250 | ✅ |
 | 6 | OCI Bundle support (config.json parsing) | ~350 | ⚠️ |
-| 7 | Network namespace + proxy environment | ~250 | ⚠️ |
+| 7 | Network namespace + policy broker | ~250 | ✅ |
 | 8 | HTTP API + daemon mode + Prometheus metrics | ~350 | ⚠️ |
 | 9 | Local image management (import/list/remove) | ~150 | ⚠️ |
 | 10 | Docker Registry image pull | ~150 | ⚠️ |
 | 11 | ~~Network bridge + port mapping~~ | ~200 | 🗑 removed |
-| 12 | Volume mounting (bind mounts) | ~50 | ⚠️ |
+| 12 | Volume mounting (bind mounts) | ~50 | ✅ |
 | 13 | Exec into running containers | ~50 | ⚠️ |
 
 Status: ✅ works · ⚠️ partial (open P1/P2) · ❌ broken (open P0 or fails
@@ -276,7 +294,7 @@ All four P0 escape/leak holes are closed:
 - ~~`--network bridge` configures the host instead of the sandbox~~ → the
   bridge/veth/NAT path was **removed** (`src/network.rs` deleted, Option A).
 - ~~`--proxy` shared the host netns~~ → fixed: the default path unshares
-  `CLONE_NEWNET`. Proxy connectivity itself remains unimplemented; see below.
+  `CLONE_NEWNET`; C3 policy egress now uses a CONNECT helper and host broker.
 - ~~seccomp allow-list has escape primitives~~ → `clone` is now
   flag-masked (forbids `CLONE_NEW*`); `open_by_handle_at`/`process_vm_*`/
   `perf_event_open`/NUMA-IO setters removed; `CAP_DAC_READ_SEARCH`/
@@ -285,23 +303,19 @@ All four P0 escape/leak holes are closed:
   `prctl(PR_CAPBSET_DROP)` for each dangerous cap.
 
 ### Correctness gaps reopened by the M2 re-audit
-- OCI parses `linux.namespaces`/`root.readonly`/`process.cwd`/`process.user`,
-  but mount initialization is not safe for every namespace subset and the
-  requested user namespace is ignored.
+- OCI namespace subsets are typed and fail closed; user namespace remains
+  explicitly unsupported rather than silently ignored.
 - ~~`ip`/`iptables` silent failure~~ → resolved (network.rs removed in M1).
-- daemon reports pre-fork errors as `failed`, but child setup/exec failures can
-  still be reported as `completed` with exit code 1.
+- daemon separates pre-fork `failed`, child `setup_failed`, and payload exit status.
 - ~~daemon `CreateRequest` can't set options~~ → extended with cpus/pids/volumes/hostname/env/root_readonly; `dangerous:true` rejected remotely (P1-4).
 - `exec` uses direct `setns` and a cgroup-name check, but has no PTY allocator
   and its privileged acceptance coverage remains limited.
 
 ### P2 — Shallow Features
-- rootfs has `/dev`, `/tmp`, empty `/sys`, and `/proc` setup, but several mount
-  failures are ignored and `/dev/mqueue` is absent.
-- `--proxy` only injects environment variables into an isolated netns; no
-  transport connects that netns to a host proxy.
-- read-only bind volumes need a proper bind remount.
-- cgroup: no v2 validation, no controller enabling, `swap.max` hardcoded (P2-2).
+- `/dev/mqueue` remains absent; policy-critical special mounts otherwise fail closed.
+- `--proxy` remains legacy env injection; policy networking uses the C3 broker.
+- cgroup validates v2 and requested controllers; controller enabling and the
+  hardcoded `swap.max=0` policy remain P2 work.
 - images: no content addressing, no layering, no metadata (P2-3).
 - registry pull: entire layers loaded into RAM; config blob never fetched; no digest verification; Docker Hub only (P2-4).
 - daemon: no persistence, no auth, no log/exec endpoints (P2-5).

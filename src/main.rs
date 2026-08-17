@@ -13,7 +13,7 @@ mod rootfs;
 mod sandbox;
 mod seccomp;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use cgroup::parse_memory;
 use clap::{Parser, Subcommand};
 use sandbox::{run_sandbox, SandboxConfig};
@@ -93,6 +93,14 @@ enum Commands {
         pid: u32,
 
         #[arg(last = true)]
+        command: Vec<String>,
+    },
+    /// Launch a host Agent under the policy's immutable Landlock FS ceiling.
+    AgentHost {
+        #[arg(long, value_name = "PATH")]
+        policy: String,
+
+        #[arg(last = true, required = true)]
         command: Vec<String>,
     },
 }
@@ -281,6 +289,19 @@ fn main() -> Result<()> {
         Commands::Exec { pid, command } => {
             let code = exec::exec_in_container(pid, &command)?;
             std::process::exit(code);
+        }
+        Commands::AgentHost { policy, command } => {
+            let loaded = policy::CapabilityDescriptor::load(std::path::Path::new(&policy))?;
+            if !loaded.descriptor.phases.is_empty() {
+                anyhow::bail!("host Agent launcher does not support dynamic phase policies");
+            }
+            landlock::enforce(&loaded.descriptor.filesystem)?;
+            let program = std::ffi::CString::new(command[0].as_str())?;
+            let args: Vec<std::ffi::CString> = command
+                .iter()
+                .map(|value| std::ffi::CString::new(value.as_str()))
+                .collect::<std::result::Result<_, _>>()?;
+            nix::unistd::execvp(&program, &args).context("failed to exec host Agent command")?;
         }
     }
     Ok(())

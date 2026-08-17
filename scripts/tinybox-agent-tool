@@ -1,0 +1,12 @@
+#!/bin/bash
+set -euo pipefail
+
+if [ "$#" -eq 0 ]; then
+    echo "usage: tinybox-agent-tool COMMAND [ARG ...]" >&2
+    exit 2
+fi
+: "${TINYBOX_POLICY:?TINYBOX_POLICY must name an orchestrator-owned policy}"
+
+TINYBOX_BIN=${TINYBOX_BIN:-tinybox}
+TINYBOX_ROOT=${TINYBOX_ROOT:-/}
+exec "$TINYBOX_BIN" run --root "$TINYBOX_ROOT" --policy "$TINYBOX_POLICY" -- "$@"

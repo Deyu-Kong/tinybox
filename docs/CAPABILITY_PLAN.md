@@ -256,6 +256,17 @@ FS 授权和 syscall 放宽仍明确不支持。控制面仅存在宿主 daemon�
 - 量化 cold-start p50/p95、RSS、任务延迟、policy switch、audit overhead。
 - 对比 native 和 runc；只有环境可复现时再加入 Firecracker。
 
+**完成（2026-08-17）：** `tinybox-agent-tool` 不接受 policy 参数，而从编排器
+设置的 `TINYBOX_POLICY` 路由任意工具并保留 stdout/stderr/exit code；策略文件
+必须放在 Agent 不可写路径。`tinybox agent-host` 在 exec Agent 前安装相同的
+Landlock FS ceiling。三个固定 workload 由 `run_capability_workloads.sh` 组合，
+`test_c6.sh` 覆盖 host secret/symlink、控制面 self-grant 路径、pids fork bomb 与
+wrapper 语义；metadata/literal IP、direct egress 分别由 schema 与 C3 验收覆盖。
+`benchmark_capability.sh` 输出 native/tinybox/runc cold latency、RSS、phase API 与
+audit API p50/p95。WSL2 本机 3 次 smoke 样本为 tinybox 110 ms/6544 KiB、runc
+40 ms/19148 KiB、phase API 2.261 ms、audit API 1.673 ms；样本小且时钟粒度粗，
+只证明工具可复现，不是通用性能结论。Firecracker 未安装，故未加入比较。
+
 ## 12. 测试矩阵
 
 | 层 | 内容 | Root |
@@ -294,12 +305,13 @@ Documentation。每个 tag 只有 root 验收证据存在且用户明确授权�
 | C3 网络 broker | ✅ 完成（2026-08-17） | C4 接入结构化网络事件 |
 | C4 统一审计 | ✅ 完成（2026-08-17） | fanotify、RET_LOG、SSE 非 C4 阻塞项 |
 | C5 动态 phase | ✅ 完成（2026-08-17） | FS ceiling 固定；daemon 多租户认证未实现 |
-| C6 Agent 集成/评测 | ⬜ 未开始 | C5 |
+| C6 Agent 集成/评测 | ✅ 完成（2026-08-17） | wrapper/host FS/攻击/可复现 benchmark |
 
 建议提交顺序：`fix: make sandbox setup fail closed`、`feat: add static capability
 descriptors`、`feat: enforce filesystem capability ceilings`、`feat: route sandbox
 egress through policy broker`、`feat: expose bounded capability audit events`、
 `feat: enforce phase-scoped capabilities`、`feat: integrate agent tools`。
 
-**下一项唯一推荐工作是 C6 Agent 集成与研究证据。** 不引入行为模型、eBPF 或
-预热池；先交付可复现 wrapper、攻击测试和基准脚本。
+**C0–C6 已全部关闭。** 下一步应进入独立复审：先验证 daemon 认证、rootless、
+动态资源更新回滚与 broker helper 专用 seccomp，再决定是否启动 VISION 的研究轨；
+不得把本计划完成等同于生产安全认证。

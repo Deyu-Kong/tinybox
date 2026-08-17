@@ -58,9 +58,9 @@ capabilities 的静态骨架，但仍是 **rootful、实验性实现**，不可�
   setup-error pipe/protocol。
 - **A3（正确性）特殊文件系统 ✅ C0 关闭**：device bind、devpts、shm、sys mount 多处
   `.ok()`；“完整硬化”没有 fail-closed 保证。`/dev/mqueue` 也未实现。
-- **A4（功能）proxy**：实现只有隔离 netns + proxy env；没有 loopback bring-up、
+- **A4（功能）proxy ✅ C3 关闭**：原实现只有隔离 netns + proxy env；没有 loopback bring-up、
   veth、socket relay 或其它宿主代理转接。`127.0.0.1:PORT` 指向沙箱自身，故当前
-  代码不能兑现“wget 经宿主 proxy 成功”。
+  代码不能兑现“wget 经宿主 proxy 成功”。C3 现以 helper + broker 关闭该缺口。
 - **A5（正确性）只读 volume ✅ C0 关闭**：bind mount 初次调用附加 `MS_RDONLY`，未执行
   `MS_REMOUNT|MS_BIND|MS_RDONLY`；只读语义需要修复并以写失败验收。
 - **A6（验证）测试门误导 ✅ C0 关闭**：非 root 下需要特权的集成测试直接返回，cargo 会
@@ -83,7 +83,10 @@ C4 已加入每 sandbox 1024 条有界审计环、dropped 计数、事件与 sum
 runtime、Landlock、cgroup 与 broker allow/deny 决策均产生结构化事件，且不记录
 请求 body、token、文件内容或环境变量。C5 已加入经 schema 校验的 phase graph、
 generation CAS、合法 next 检查、动态 broker allowlist 与 cgroup limit 更新；FS
-ceiling 保持不变，payload 因无宿主路由不能访问控制 API。C6 尚未实现。
+ceiling 保持不变，payload 因无宿主路由不能访问控制 API。C6 已加入无 policy
+参数的 tool wrapper、host Agent Landlock launcher、三类 workload、攻击验收和
+native/tinybox/runc + phase/audit 可复现 benchmark。C0–C6 均已 root 验收；这不
+关闭 daemon 认证、rootless、动态更新回滚或研究轨问题。
 
 ---
 
@@ -415,7 +418,7 @@ ceiling 保持不变，payload 因无宿主路由不能访问控制 API。C6 尚
 | 4 | cgroup limits | ⚠️ | P2-2（无 v2 校验，swap 硬编码） |
 | 5 | seccomp + caps | ✅ | —（P0-3、P0-4 已在 M1 修） |
 | 6 | OCI bundle | ⚠️ | namespace 已 fail-closed；仍仅支持字段子集 |
-| 7 | network（isolated + proxy env） | ⚠️ | 无宿主代理转接，不能证明代理可用（A4） |
+| 7 | network（isolated + policy broker） | ✅ | C3 本地 fixture、拒绝与直连失败验收 |
 | 8 | daemon API | ⚠️ | setup_failed 已区分；仍有 P2-5 持久化/鉴权/日志 |
 | 9 | local images | ⚠️ | P2-3 |
 | 10 | registry pull | ⚠️ | P2-4 |

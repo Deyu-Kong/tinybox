@@ -13,11 +13,11 @@ tinybox 是一个从零用 Rust 实现的 Linux 沙箱运行时，类似 `runc` 
 聚焦 Agent 工作负载。仓库历史上已推进到 Phase 13；phase 编号是增量历史，
 不是“13/8”的完成比例。
 
-> **⚠️ 安全状态（2026-08-16，M2 后复审）：实验性、rootful，不是生产安全
-> 边界。** M1 的四个原始 P0 已关闭；但 M2 复审重新发现 OCI namespace
-> 子集、daemon child 失败分类、特殊文件系统 fail-open、proxy 不可达及只读
-> volume 等正确性缺口。任何“✅/已完成”陈述以 [docs/PLAN.md](docs/PLAN.md)
-> 最新复审表为准，不得仅依据 tag 或代码存在判断。
+> **⚠️ 安全状态（2026-08-17，C0–C6 后）：实验性、rootful，不是生产安全
+> 边界。** M2 复审的 P0/P1 正确性缺口已由 C0 关闭；C1–C6 实现静态策略、
+> Landlock、无 NIC broker、有界审计、动态 phase、Agent wrapper 与 host FS
+> launcher，并有 root 验收。daemon 认证/持久化、rootless、完整 OCI、双向动态
+> FS/syscall 授权仍未实现；状态以 [docs/PLAN.md](docs/PLAN.md) 为准。
 
 ## 约定
 
@@ -62,6 +62,8 @@ tinybox 是一个从零用 Rust 实现的 Linux 沙箱运行时，类似 `runc` 
 - 跑测试：`cargo test && cargo clippy -- -D warnings`；非 root 时特权集成测试
   会提前返回，不能据此声称运行时验收通过
 - 跑验收测试：`SUDO_ASKPASS=.sudo-askpass.sh sudo -A ./scripts/test_phaseN.sh`
+- 能力轨验收：依次运行 `scripts/test_c0.sh` 至 `scripts/test_c6.sh`；固定 workload
+  用 `scripts/run_capability_workloads.sh`，性能证据用 `scripts/benchmark_capability.sh`
 - **Sudo 设置**：如使用 `.sudo-askpass.sh`，视为本机私密文件，不得提交或
   在文档、日志中记录密码
 - **WSL2 修复**：若 `sudo` 报 "unable to allocate pty"，跑：
@@ -143,13 +145,13 @@ tinybox run --oci /tmp/oci-bundle   # → "hello-oci"
 ### Phase 7
 ```bash
 tinybox run -- ping 8.8.8.8         # → network unreachable
-tinybox run --proxy http://proxy.example:8080 -- env  # → proxy env 被注入
+tinybox run --policy policy.json -- curl https://allowed.example  # → 经 broker
 ```
 > ⚠️ **P0-1 / P0-2（已在 M1 解决，2026-08-16）：** bridge 路径被删
 > （Option A），沙箱现在始终 unshare `CLONE_NEWNET`。`--proxy` 现在
-> 提供网络隔离 + env vars。当前没有把隔离 netns 接到宿主 proxy 的 relay；
-> `127.0.0.1` 是沙箱自身，不能声称 wget 可达。`scripts/test_phase7.sh` 只断言
-> 环境变量及无默认路由。
+> 提供网络隔离。C3 已加入 sandbox CONNECT helper + host broker，只有 descriptor
+> 精确允许的 host/port 可达；直接 socket 仍无路由。`--proxy` 仅保留旧式环境变量
+> 注入，不构成授权。见 `scripts/test_c3.sh`。
 
 ### Phase 8
 ```bash
@@ -337,9 +339,9 @@ curl http://127.0.0.1:8080/metrics  # → Prometheus metrics
 - **P2-1**：`rootfs.rs` 加 `setup_special_fs`，pivot 前在 merged 下挂
   `/dev`（tmpfs + bind 设备节点 + devpts + shm）、`/tmp`（size-capped tmpfs）、
   `/sys`（空只读 tmpfs 防宿主信息泄漏）、`/proc`。
-- **复审结论**：代码与单元/lint 门存在，但原验收未覆盖 namespace 子集的
-  mount 安全、child setup 错误、proxy 连通、特殊 mount fail-closed、只读
-  bind remount；M2 在 PLAN 中已重开，R1 前置条件尚未重新满足。
+- **C0–C6 结论（2026-08-17）**：上述复审缺口均已有回归测试；能力轨包含
+  `scripts/test_c0.sh` 至 `test_c6.sh`。这不等于生产安全：daemon 认证、持久化、
+  rootless 与双向动态 FS/syscall 授权仍是明确边界。
 
 ## 相关项目
 

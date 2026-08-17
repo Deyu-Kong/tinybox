@@ -28,3 +28,4 @@ jobs:
       - run: sudo ./scripts/test_c3.sh
       - run: sudo ./scripts/test_c4.sh
       - run: sudo ./scripts/test_c5.sh
+      - run: sudo ./scripts/test_c6.sh
