@@ -10,13 +10,17 @@ use nix::unistd::{
 use std::ffi::CString;
 use std::fmt;
 use std::io::Read as IoRead;
+use std::os::fd::AsRawFd;
 use std::os::unix::io::{BorrowedFd, FromRawFd, IntoRawFd};
+use std::os::unix::net::UnixDatagram;
 use std::path::PathBuf;
 
+use crate::broker;
 use crate::cgroup::{Cgroup, CgroupConfig};
 use crate::landlock;
 use crate::oci::NamespaceType;
-use crate::policy::FsRule;
+use crate::policy::{FsRule, NetworkRule};
+use crate::proxy;
 use crate::rootfs::{mount_volumes, RootfsConfig};
 use crate::seccomp::{apply_seccomp_filter, drop_capabilities};
 
@@ -35,6 +39,7 @@ pub struct SandboxConfig {
     pub pids_limit: Option<u64>,
     pub dangerous: bool,
     pub filesystem_policy: Option<Vec<FsRule>>,
+    pub network_policy: Option<Vec<NetworkRule>>,
     /// None = unshare all (tinybox default, max isolation). Some(set) = honor
     /// only the listed OCI namespace types ("pid"/"mount"/"uts"/"net"/"ipc"/
     /// "user"/"cgroup").
@@ -114,12 +119,26 @@ where
         pipe2(OFlag::O_CLOEXEC).context("failed to create setup error pipe")?;
     let setup_read_fd = setup_read_fd.into_raw_fd();
     let setup_write_fd = setup_write_fd.into_raw_fd();
+    let (mut broker_host, mut broker_child) = match &config.network_policy {
+        Some(rules) if !rules.is_empty() => {
+            let (host, child) = UnixDatagram::pair().context("failed to create broker channel")?;
+            (Some(host), Some(child))
+        }
+        _ => (None, None),
+    };
 
     // SAFETY: fork() is safe here as we immediately handle namespace setup in the child.
     match unsafe { fork() }? {
         ForkResult::Parent { child } => {
             close(read_fd).ok();
             close(setup_write_fd).ok();
+            drop(broker_child.take());
+            let broker_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let broker_thread = broker_host.take().map(|channel| {
+                let rules = config.network_policy.clone().unwrap_or_default();
+                let stop = broker_stop.clone();
+                std::thread::spawn(move || broker::serve(channel, rules, stop))
+            });
 
             if let Some(ref cg) = cgroup {
                 cg.add_process(child.as_raw() as u32)?;
@@ -139,6 +158,14 @@ where
                 .read_to_string(&mut setup_message)
                 .context("failed to read child setup status")?;
             let status = waitpid(child, None)?;
+            broker_stop.store(true, std::sync::atomic::Ordering::Release);
+            if let Some(thread) = broker_thread {
+                match thread.join() {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => eprintln!("tinybox broker: {error:#}"),
+                    Err(_) => eprintln!("tinybox broker thread panicked"),
+                }
+            }
             drop(cgroup);
             if !setup_message.is_empty() {
                 return Err(SetupError(setup_message).into());
@@ -148,12 +175,14 @@ where
         ForkResult::Child => {
             close(write_fd).ok();
             close(setup_read_fd).ok();
+            drop(broker_host.take());
 
             let mut buf = [0u8; 2];
             let _ = read(read_fd, &mut buf);
             close(read_fd).ok();
 
-            if let Err(e) = child_main(config, &program, &args, setup_write_fd) {
+            if let Err(e) = child_main(config, &program, &args, setup_write_fd, broker_child.take())
+            {
                 report_setup_error(setup_write_fd, &format!("{e:#}"));
                 eprintln!("tinybox: {}", e);
                 std::process::exit(1);
@@ -168,6 +197,7 @@ fn child_main(
     program: &CString,
     args: &[CString],
     setup_write_fd: i32,
+    broker_channel: Option<UnixDatagram>,
 ) -> Result<()> {
     // SAFETY: unshare the requested namespace set. `config.namespaces == None`
     // is tinybox's default — the original four (NEWPID/NEWNS/NEWUTS/NEWNET),
@@ -247,6 +277,7 @@ fn child_main(
     match unsafe { fork() }? {
         ForkResult::Parent { child } => {
             close(setup_write_fd).ok();
+            drop(broker_channel);
             let status = waitpid(child, None)?;
             let code = exit_code_from_status(status);
             drop(rootfs_config);
@@ -266,6 +297,12 @@ fn child_main(
             if !has_rootfs {
                 mount_volumes(&config.volumes, std::path::Path::new("/"))?;
             }
+            let proxy_enabled = if let Some(channel) = broker_channel {
+                start_proxy_helper(channel)?;
+                true
+            } else {
+                false
+            };
             // P1-1: honor OCI process.user — set gid then uid while we still
             // hold CAP_SETUID/CAP_SETGID (caps dropped below). gid must be set
             // before uid per setuid(2) rules.
@@ -284,7 +321,7 @@ fn child_main(
             if let Some(ref cwd) = config.cwd {
                 chdir(cwd.as_str())?;
             }
-            let env_values = effective_environment(config);
+            let env_values = effective_environment(config, proxy_enabled);
             if env_values.is_empty() {
                 execvp(program, args)?;
             } else {
@@ -320,9 +357,39 @@ fn report_setup_error(fd: i32, message: &str) {
     close(fd).ok();
 }
 
-fn effective_environment(config: &SandboxConfig) -> Vec<String> {
+fn start_proxy_helper(channel: UnixDatagram) -> Result<()> {
+    let (ready_read, ready_write) = pipe().context("failed to create proxy readiness pipe")?;
+    match unsafe { fork() }? {
+        ForkResult::Parent { .. } => {
+            drop(ready_write);
+            drop(channel);
+            let mut byte = [0u8; 1];
+            let count = read(ready_read.as_raw_fd(), &mut byte)?;
+            if count != 1 {
+                bail!("sandbox proxy failed before becoming ready");
+            }
+            Ok(())
+        }
+        ForkResult::Child => {
+            drop(ready_read);
+            let ready_fd = ready_write.into_raw_fd();
+            if let Err(error) = proxy::serve(channel, ready_fd) {
+                eprintln!("tinybox proxy: {error:#}");
+                std::process::exit(1);
+            }
+            unreachable!()
+        }
+    }
+}
+
+fn effective_environment(config: &SandboxConfig, proxy_enabled: bool) -> Vec<String> {
     let mut env = config.env.clone();
-    if let Some(proxy) = &config.proxy {
+    let proxy = if proxy_enabled {
+        Some(format!("http://{}", proxy::PROXY_ADDRESS))
+    } else {
+        config.proxy.clone()
+    };
+    if let Some(proxy) = proxy {
         for key in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"] {
             env.push(format!("{}={}", key, proxy));
         }
@@ -418,6 +485,7 @@ mod tests {
             pids_limit: None,
             dangerous: false,
             filesystem_policy: None,
+            network_policy: None,
             namespaces: None,
             cwd: None,
             uid: 0,
@@ -443,6 +511,7 @@ mod tests {
             pids_limit: None,
             dangerous: false,
             filesystem_policy: None,
+            network_policy: None,
             namespaces: Some(vec![NamespaceType::Pid]),
             cwd: None,
             uid: 0,
@@ -468,6 +537,7 @@ mod tests {
             pids_limit: None,
             dangerous: false,
             filesystem_policy: None,
+            network_policy: None,
             namespaces: None,
             cwd: None,
             uid: 0,

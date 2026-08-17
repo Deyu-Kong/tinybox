@@ -71,12 +71,15 @@ capabilities 的静态骨架，但仍是 **rootful、实验性实现**，不可�
 `setup_failed` 与 payload exit 分离。特殊 FS 关键错误改为 fail-closed；volume
 移到 pivot 前绑定，拒绝 symlink target，并执行真正的只读 remount。cgroup
 验证 v2 controller，CLI 显示实验性警告；CI 将无特权 unit/lint 与 root C0
-验收分开。A4 的网络数据通路仍按计划留给 C3。
+验收分开。A4 的网络数据通路已由 C3 关闭。
 
 **Capability track（2026-08-17）：** C1 已加入 CLI/API 共用的版本化
 `CapabilityDescriptor`、资源 ceiling 与稳定 policy hash；未执行的网络/phase
 规则 fail closed。C2 已用 Landlock ABI 强制 sandbox payload 的 FS ceiling，
-并以读写、只读、未声明路径和 symlink escape 的 root 验收覆盖。C3–C6 尚未实现。
+并以读写、只读、未声明路径和 symlink escape 的 root 验收覆盖。C3 已加入
+私有 netns CONNECT helper 与 host broker：仅精确匹配策略中的 host/port，
+payload 直接 socket 无路由；本地 fixture、拒绝规则与直连失败均有 root 验收。
+C4–C6 尚未实现。
 
 ---
 

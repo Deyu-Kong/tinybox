@@ -25,3 +25,4 @@ jobs:
       - run: sudo ./scripts/test_c0.sh
       - run: sudo ./scripts/test_c1.sh
       - run: sudo ./scripts/test_c2.sh
+      - run: sudo ./scripts/test_c3.sh

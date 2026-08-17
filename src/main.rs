@@ -1,3 +1,4 @@
+mod broker;
 mod cgroup;
 mod daemon;
 mod exec;
@@ -5,6 +6,7 @@ mod image;
 mod landlock;
 mod oci;
 mod policy;
+mod proxy;
 mod registry;
 mod rootfs;
 mod sandbox;
@@ -256,6 +258,9 @@ fn main() -> Result<()> {
                 filesystem_policy: loaded_policy
                     .as_ref()
                     .map(|policy| policy.descriptor.filesystem.clone()),
+                network_policy: loaded_policy
+                    .as_ref()
+                    .map(|policy| policy.descriptor.network.clone()),
                 namespaces,
                 cwd,
                 uid,

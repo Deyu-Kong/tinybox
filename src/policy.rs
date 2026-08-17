@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
+use std::net::IpAddr;
 use std::path::{Component, Path, PathBuf};
 
 pub const POLICY_VERSION: u32 = 1;
@@ -100,9 +101,9 @@ impl CapabilityDescriptor {
         }
         for rule in &self.network {
             validate_host(&rule.host)?;
-        }
-        if !self.network.is_empty() {
-            anyhow::bail!("network capability rules require the C3 policy broker");
+            if rule.port == 0 {
+                anyhow::bail!("network port must be positive");
+            }
         }
         if !self.phases.is_empty() {
             anyhow::bail!("phase policies require C5 dynamic policy enforcement");
@@ -131,6 +132,7 @@ fn validate_host(host: &str) -> Result<()> {
         || host != host.to_ascii_lowercase()
         || host.ends_with('.')
         || host.contains(['/', ':', '@'])
+        || host.parse::<IpAddr>().is_ok()
     {
         anyhow::bail!("network host must be a normalized lowercase DNS name: {host}");
     }
@@ -170,11 +172,28 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unenforced_capabilities() {
+    fn accepts_normalized_network_capabilities() {
         let mut policy = offline_policy();
         policy.network.push(NetworkRule {
             host: "example.com".into(),
             port: 443,
+        });
+        assert!(policy.compile().is_ok());
+    }
+
+    #[test]
+    fn rejects_literal_network_addresses_and_zero_ports() {
+        let mut policy = offline_policy();
+        policy.network.push(NetworkRule {
+            host: "127.0.0.1".into(),
+            port: 443,
+        });
+        assert!(policy.compile().is_err());
+
+        let mut policy = offline_policy();
+        policy.network.push(NetworkRule {
+            host: "example.com".into(),
+            port: 0,
         });
         assert!(policy.compile().is_err());
     }

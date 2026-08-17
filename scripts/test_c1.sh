@@ -35,11 +35,8 @@ grep -q 'exceeds the policy ceiling' "$C1_TMP/ceiling.err"
 cat >"$C1_TMP/network.json" <<'EOF'
 {"version":1,"filesystem":[],"network":[{"host":"example.com","port":443}],"resources":{"memory_bytes":268435456,"cpus":1.0,"pids":50},"phases":[]}
 EOF
-if "$TINYBOX" run --policy "$C1_TMP/network.json" -- true 2>"$C1_TMP/network.err"; then
-    echo "FAIL: unenforced network rule was accepted" >&2
-    exit 1
-fi
-grep -q 'require the C3 policy broker' "$C1_TMP/network.err"
+"$TINYBOX" run --policy "$C1_TMP/network.json" -- true 2>"$C1_TMP/network.err"
+grep -q '^tinybox policy: sha256:' "$C1_TMP/network.err"
 
 "$TINYBOX" daemon --listen "127.0.0.1:$C1_PORT" >"$C1_TMP/daemon.log" 2>&1 &
 C1_DAEMON_PID=$!

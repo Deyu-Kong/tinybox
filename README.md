@@ -10,10 +10,9 @@ A minimal, secure sandbox runtime for running AI Agents in isolated environments
 > ⚠️ **Experimental, rootful runtime; not a production security boundary.**
 > The original M1 P0 findings were fixed, but an M2 re-audit found open
 > correctness gaps in OCI namespace subsets, daemon failure reporting,
-> special-filesystem setup, proxy connectivity, and read-only volumes. See
+> special-filesystem setup, proxy connectivity, and read-only volumes. C0 and
+> C3 have now closed those specific gaps. See
 > [docs/PLAN.md](docs/PLAN.md) for the authoritative status.
-> C0 closed all of those re-audit items except proxy connectivity, which is
-> deliberately scheduled for the C3 network broker.
 
 ## Motivation
 
@@ -35,9 +34,10 @@ remediation roadmap. Per-phase status uses ✅ works / ⚠️ partial / ❌ brok
 The implementation sequence for Agent-oriented capability management is in
 [docs/CAPABILITY_PLAN.md](docs/CAPABILITY_PLAN.md).
 
-Capability-track status: C0–C2 complete. `--policy` now enforces resource
-ceilings and a Landlock filesystem ceiling; network rules fail closed until
-the C3 broker exists. Dynamic phases and Agent integration remain unimplemented.
+Capability-track status: C0–C3 complete. `--policy` enforces resource and
+Landlock filesystem ceilings; allowlisted TCP egress traverses an in-sandbox
+CONNECT helper and host broker while direct sockets remain unrouted. Unified
+audit, dynamic phases, and Agent integration remain unimplemented.
 
 ### Feature Status (honest)
 
@@ -49,7 +49,7 @@ the C3 broker exists. Dynamic phases and Agent integration remain unimplemented.
 | 4 | cgroup resource limits (CPU/memory/pids) | ⚠️ | no v2 validation, `swap.max` hardcoded, no controller enabling (P2-2) |
 | 5 | seccomp + capabilities hardening | ✅ | `clone` flag-masked; escape syscalls removed; bounding set cleared (M1) |
 | 6 | OCI Bundle support (config.json subset) | ⚠️ | typed namespace subset; user namespace explicitly unsupported |
-| 7 | Network namespace + proxy environment | ⚠️ | isolated netns and env only; no host-proxy transport |
+| 7 | Network namespace + policy broker | ✅ | no NIC; exact host/port CONNECT allowlist; direct sockets unrouted |
 | 8 | HTTP API + daemon mode + Prometheus metrics | ⚠️ | setup failures separated; persistence/auth/log endpoints remain open |
 | 9 | Local image management (import/list/remove/run --image) | ⚠️ | no content addressing, no layering, no metadata (P2-3) |
 | 10 | Docker Registry image pull | ⚠️ | in-memory blobs (OOM risk); never fetches config blob; Docker Hub only (P2-4) |

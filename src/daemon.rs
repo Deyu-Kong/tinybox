@@ -163,6 +163,9 @@ async fn create(
             filesystem_policy: loaded_policy
                 .as_ref()
                 .map(|policy| policy.descriptor.filesystem.clone()),
+            network_policy: loaded_policy
+                .as_ref()
+                .map(|policy| policy.descriptor.network.clone()),
             namespaces: None,
             cwd: None,
             uid: 0,

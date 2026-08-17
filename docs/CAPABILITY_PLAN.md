@@ -196,7 +196,13 @@ payload → 127.0.0.1:proxy（sandbox helper）
 - 废弃“任意 `--proxy URL` 就获得网络”的语义；upstream 只能由 broker 使用。
 
 验收：允许 fixture 成功；未允许 host、字面 IP、metadata、直接 socket 失败；
-所有 allow/deny 产生事件。测试不得依赖公网。
+测试不得依赖公网。网络 allow/deny 的结构化事件由紧随其后的 C4 接入。
+
+**完成（2026-08-17）：** helper 在私有 netns 拉起 loopback，仅支持 CONNECT；
+host broker 精确匹配规范化 host/port、解析并连接目标，再用 `SCM_RIGHTS`
+回传已连接 socket。除测试专用的显式 `localhost` 规则外，private、loopback、
+link-local 与 metadata 地址均拒绝；payload 直连无路由。`test_c3.sh` 使用本地
+fixture 覆盖允许、未允许和直连失败。统一审计仍属于 C4，未提前宣称完成。
 
 ## 9. C4——统一审计
 
@@ -271,7 +277,7 @@ Documentation。每个 tag 只有 root 验收证据存在且用户明确授权�
 | C0 可信底座 | ✅ 完成（2026-08-17） | A4 网络通路按计划留给 C3 |
 | C1 静态 descriptor | ✅ 完成（2026-08-17） | 非空网络规则按计划 fail closed 到 C3 |
 | C2 FS ceiling | ✅ 完成（2026-08-17） | sandbox payload 已强制；host Agent launcher 留 C6 |
-| C3 网络 broker | ⬜ 未开始 | C0、C1 |
+| C3 网络 broker | ✅ 完成（2026-08-17） | C4 接入结构化网络事件 |
 | C4 统一审计 | ⬜ 未开始 | C1；网络事件依赖 C3 |
 | C5 动态 phase | ⬜ 未开始 | C2、C3、C4 |
 | C6 Agent 集成/评测 | ⬜ 未开始 | C5 |
@@ -281,5 +287,5 @@ descriptors`、`feat: enforce filesystem capability ceilings`、`feat: route san
 egress through policy broker`、`feat: expose bounded capability audit events`、
 `feat: enforce phase-scoped capabilities`、`feat: integrate agent tools`。
 
-**下一项唯一推荐工作是 C0.1–C0.4。** C0 证据齐全以前，不开始行为模型、
+**下一项唯一推荐工作是 C4 统一审计。** C4 证据齐全以前，不开始行为模型、
 eBPF、预热池或动态 grant/revoke。
