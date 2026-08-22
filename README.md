@@ -23,6 +23,16 @@ Docker replacement or hosted E2B competitor. It does not provide an independent
 guest kernel, so it is not an alternative to a VM/microVM for hostile cloud
 tenants.
 
+## See it in action
+
+OpenCode makes four separate Bash tool calls inside one persistent tinybox task:
+the build artifact and private dependency cache survive across execs, tests pass,
+and an undeclared host path remains unreadable. The task is destroyed at the end.
+
+[![OpenCode running inside a persistent tinybox task](docs/assets/tinybox-opencode-product-demo.gif)](docs/assets/tinybox-opencode-product-demo.mp4)
+
+_The animation is accelerated 2.5×. Click it for the H.264 MP4._
+
 ## Why tinybox
 
 Local coding agents are often either allowed to run directly on the developer's
