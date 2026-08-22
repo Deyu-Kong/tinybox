@@ -260,7 +260,7 @@ experimental smoke；Pi 按官方 `registerTool` 完成 source spike，但因环
 `scripts/test_m3.sh`。task exec 同时修复为按 task PATH 解析首个 executable，避免
 profile 只对子进程生效的假支持。
 
-### M4：Demo 与度量
+### M4：Demo 与度量 ✅ 2026-08-22
 
 演示 A：bare 与 tinybox 都完成正常 build/test；tinybox 额外证明 timeout、后台进程
 和 task destroy 得到完整回收。
@@ -274,6 +274,12 @@ profile 只对子进程生效的假支持。
 - destroy 后残留检查。
 
 完成门：脚本输出机器可读结果和人类摘要；README 的性能表述只引用实测数据。
+
+完成记录：`scripts/demo_local_agent.sh` 在同一合成 workspace 上运行 bare、cold
+task 与 warm exec build/test，输出单行 schema v1 JSON及 stderr 摘要；同时测量
+p50/p95、daemon/task idle RSS、environment/cache 磁盘增量和用户步骤，并验收
+timeout=124、后台进程 exec cgroup 回收与 destroy 后无 PID/cgroup/state。10 次本机
+数据已写入 README；它是 WSL2 单机观测，不外推为普遍性能优势。
 
 ### M5：本地安装与文档
 

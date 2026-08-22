@@ -37,9 +37,9 @@ environment, and lifecycle setup. tinybox targets the gap between them:
 - task-private rootfs, home, caches, and volumes;
 - a deliberately small API rather than a general container platform.
 
-“Lightweight” currently means a smaller product surface and shorter local setup
-path. Startup, memory, and disk-cost claims remain to be measured by
-the MVP benchmark before they are advertised as performance advantages.
+“Lightweight” primarily means a smaller product surface and shorter local setup
+path. The first reproducible local measurements are reported below; they are not
+a claim that tinybox is universally faster than Docker or other runtimes.
 
 The intended integration keeps the Agent UX unchanged:
 
@@ -59,8 +59,8 @@ OpenCode / Pi / Codex / CLI Agent (target integrations)
 ```
 
 Agent-native task/exec, environments, lifecycle CLI, and the first adapter contracts
-have passed M0–M3 gates. Demo/measurement and install UX are still implementation
-targets, so this is not yet a released MVP. See the active
+have passed M0–M4 gates. Install UX is still an implementation target, so this is
+not yet a released MVP. See the active
 [MVP plan](docs/PRODUCT_PLAN.md), [product vision](docs/VISION.md), and
 [Agent integration matrix](docs/AGENT_INTEGRATIONS.md).
 
@@ -93,7 +93,7 @@ For detailed notes and the design lessons taken from these systems, see
 
 **Phases 1–13 form the experimental runtime baseline; some features remain
 partial. Persistent task/exec, environments, generic Agent CLI, and integration
-classification have passed M0–M3. OpenCode is experimental, Codex is wrapper-smoke
+classification and the deterministic demo have passed M0–M4. OpenCode is experimental, Codex is wrapper-smoke
 only, and Pi remains unsupported after a source-level spike.** See
 [docs/PLAN.md](docs/PLAN.md) for the authoritative, line-referenced audit and
 remediation roadmap. Per-phase status uses ✅ works / ⚠️ partial / ❌ broken.
@@ -128,6 +128,31 @@ design specification, not a claim that the adapter already exists.
 Keep the selected policy outside Agent-writable paths. The host launcher enforces
 only the immutable filesystem ceiling; high-risk execution still belongs in the
 sandbox wrapper.
+
+## Measured local demo
+
+Run the same synthetic build/test workload bare, through a cold task, and through
+warm exec:
+
+```bash
+cargo build --release
+sudo ./scripts/demo_local_agent.sh 10
+```
+
+The script emits one schema-versioned JSON object on stdout and a human summary on
+stderr. On 2026-08-22, WSL2 Linux 5.15 with 4 visible CPUs on an AMD Ryzen 7 8845HS
+produced:
+
+| Path | p50 | p95 |
+|---|---:|---:|
+| bare build/test | 6.120 ms | 6.884 ms |
+| cold task build/test/destroy | 110.923 ms | 211.185 ms |
+| warm task exec build/test | 64.989 ms | 68.700 ms |
+
+The same run observed 9,772 KiB daemon idle RSS, 5,032 KiB task idle RSS, and an
+exact 65,536-byte environment increase after writing a 64 KiB private cache fixture.
+Timeout, background-process reaping, and destroy cleanup all passed. These numbers
+describe this machine and workload only; rerun the script for local evidence.
 
 ### Feature Status (honest)
 

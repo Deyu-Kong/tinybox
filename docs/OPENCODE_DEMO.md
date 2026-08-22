@@ -1,7 +1,9 @@
 # OpenCode 裸奔与 tinybox 本地容器对照 Demo
 
-> 状态：设计稿。现有 [DEMO.md](DEMO.md) 继续验证 capability runtime；本文定义
-> 面向产品定位的真实 OpenCode 集成演示。Demo 不是安全认证。
+> 状态：确定性 harness 已实现。`scripts/demo_local_agent.sh` 验证 bare/tinybox
+> build/test、生命周期与度量；`scripts/test_m3.sh` 验证 OpenCode adapter contract
+> 和真实加载。需要用户模型凭据的 live LLM prompt 仍是可选人工演示，不属于 CI
+> 完成门。Demo 不是安全认证。
 
 ## 1. 演示结论
 

@@ -149,8 +149,13 @@ fn cleanup_task_cgroup(cgroup_path: &Path) -> Result<()> {
             }
         }
     }
-    fs::remove_dir(cgroup_path)
-        .with_context(|| format!("failed to remove task cgroup {}", cgroup_path.display()))?;
+    if let Err(error) = fs::remove_dir(cgroup_path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return Err(error).with_context(|| {
+                format!("failed to remove task cgroup {}", cgroup_path.display())
+            });
+        }
+    }
     Ok(())
 }
 
