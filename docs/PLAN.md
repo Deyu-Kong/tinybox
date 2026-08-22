@@ -5,10 +5,17 @@
 状态保持同步；那些文档里的"完成"仅指满足验收标准**且**无下列开放 P0/P1
 项的功能。
 
-> **三份职责。** 本文件管当前缺陷与修复轨（M0–M4）；
-> [CAPABILITY_PLAN.md](CAPABILITY_PLAN.md) 是后续模型实施 Agent 权限能力的
-> 活跃计划（C0–C6）；[VISION.md](VISION.md) 管研究动机与长期方向。冲突时：
-> 当前事实听本文件，实施顺序听 CAPABILITY_PLAN，长期目标听 VISION。
+> **文档职责。** 本文件管当前代码事实与缺陷；
+> [CAPABILITY_PLAN.md](CAPABILITY_PLAN.md) 保留 C0–C6 的已完成实施记录；
+> [PRODUCT_PLAN.md](PRODUCT_PLAN.md) 是当前产品化计划；
+> [VISION.md](VISION.md) 管产品边界与长期目标。冲突时：当前事实听本文，
+> 新工作顺序听 PRODUCT_PLAN，产品边界听 VISION。
+
+> **2026-08-22 产品变更。** 当前目标改为本地、单用户的轻量 Agent 容器系统：
+> persistent task + environment model + repeated clean exec + Agent adapters。
+> task/exec 主体正在工作树中开发，尚未完成 root 验收与 Agent adapter，因此不
+> 属于下文已完成能力。save/restore/reset 仅是 MVP 后的独立可选评估，不参与
+> 项目定义或 MVP 完成门。新的完成门见 PRODUCT_PLAN G0 与 M0–M5。
 
 约定：
 - `file:line` 引用以提交 `b73c7b1`（phase 13）的代码树为准。
@@ -359,15 +366,13 @@ native/tinybox/runc + phase/audit 可复现 benchmark。C0–C6 均已 root 验�
 2. ✅ P1-3：daemon 状态 `{running,completed,failed}` + 失败计数器。
 3. ✅ P1-4：扩展 `CreateRequest`；拒绝远程 `dangerous`。
 4. ✅ P1-5：`exec` 走 `setns`，namespace 完整、PID 校验、带 TTY。
-5. ✅ **P2-1 已提前**（原在 M3）：完整 `/dev`、`/tmp`、`/sys` 设置。R0 的
-   验收需要真跑 `pip install`，而它需要 `/dev/null`、可写 `/tmp` 等——故
-   P2-1 是研究轨首个验收的前置，不是打磨项。
+5. ✅ **P2-1 已提前**（原在 M3）：完整 `/dev`、`/tmp`、`/sys` 设置。当时
+   R0 验收需要真跑 `pip install`，而它需要 `/dev/null`、可写 `/tmp` 等。
 6. ⚠️ 当时记录为 `cargo test`（59 测试）+ clippy 及若干 acceptance 全绿；
    复审发现测试未覆盖 A1–A5，且非 root 的集成测试会静默跳过。
 
-> **研究轨依赖（见 [VISION.md](VISION.md)）**：R0 可与 M2 并行（插桩
-> 非侵入）。R1 只在 **M2 复审项 A1–A5 关闭后**开始；当前不能仅凭已有
-> M2 tag 视为满足。
+> **历史说明：** 原 R0–R6 研究路线已被 2026-08-20 的
+> [PRODUCT_PLAN.md](PRODUCT_PLAN.md) 取代；本段仅解释 M2 当时的排序。
 
 ### 里程碑 M3——纵深
 1. P2-2：cgroup v2 校验 + 控制器启用。
@@ -384,7 +389,8 @@ native/tinybox/runc + phase/audit 可复现 benchmark。C0–C6 均已 root 验�
   故此项休眠）
 - 多机任何东西
 
-> 研究轨（R0–R3 + 延伸 R4–R6）在 [VISION.md](VISION.md)，不在此追踪。
+> 新的 Agent Tool Sandbox 产品化工作在 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，
+> 不在本缺陷审计中追踪。
 
 ---
 

@@ -1,9 +1,9 @@
 # tinybox Agent 能力管理实施计划
 
-> **ACTIVE，2026-08-17。** 本文件指导后续模型实现 tinybox 的核心差异化
-> 能力：由用户/编排器授权、runtime 强制、Agent 无法自行扩权的任务级权限。
-> 当前缺陷听 [PLAN.md](PLAN.md)，实施顺序听本文，长期方向听
-> [VISION.md](VISION.md)。
+> **COMPLETE/HISTORICAL，2026-08-20。** 本文件记录 C0–C6 如何实现
+> “外部授权、runtime 强制、Agent 无法自行扩权”。新的产品化工作按
+> [PRODUCT_PLAN.md](PRODUCT_PLAN.md) 执行；当前缺陷听 [PLAN.md](PLAN.md)，
+> 产品边界听 [VISION.md](VISION.md)。
 
 ## 1. 目标与完成定义
 

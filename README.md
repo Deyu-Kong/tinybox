@@ -1,6 +1,9 @@
-# tinybox — Agent Sandbox Runtime
+# tinybox — Lightweight Local Containers for Coding Agents
 
-A minimal, secure sandbox runtime for running AI Agents in isolated environments, built from scratch in Rust.
+A small, self-hosted Linux container runtime intended to integrate with
+OpenCode, Pi Agent, Codex, and other CLI coding agents. tinybox combines a
+focused subset of Docker-style Linux isolation with E2B-style persistent
+sandbox sessions, repeated exec, and environment lifecycle APIs.
 
 ![Phase Progress](https://img.shields.io/badge/phases-1--13-audited-yellow)
 ![Lines of Code](https://img.shields.io/badge/Rust_LOC-2306-orange)
@@ -8,31 +11,95 @@ A minimal, secure sandbox runtime for running AI Agents in isolated environments
 ![Status](https://img.shields.io/badge/status-experimental%2C%20open%20correctness%20gaps-orange)
 
 > ⚠️ **Experimental, rootful runtime; not a production security boundary.**
-> The original M1 P0 findings were fixed, but an M2 re-audit found open
-> correctness gaps in OCI namespace subsets, daemon failure reporting,
-> special-filesystem setup, proxy connectivity, and read-only volumes. C0 and
-> C3 have now closed those specific gaps. See
+> The original M1 P0 findings and the later C0–C3 correctness gaps have been
+> addressed and regression-tested. The runtime remains experimental because
+> daemon authentication/persistence, rootless operation, full OCI semantics,
+> and a hostile-tenant kernel boundary are not provided. See
 > [docs/PLAN.md](docs/PLAN.md) for the authoritative status.
 
-## Motivation
+tinybox is aimed at **individual Linux developer machines, dedicated Agent
+runners, and tenant-isolated VMs**. It is deliberately a feature subset, not a
+Docker replacement or hosted E2B competitor. It does not provide an independent
+guest kernel, so it is not an alternative to a VM/microVM for hostile cloud
+tenants.
 
-This project is a companion to the DeepSeek Agent Infra position. It demonstrates understanding of Linux container isolation primitives by building a lightweight sandbox runtime from scratch, similar in spirit to how [mini-infer](https://github.com/Deyu-Kong/mini-infer) builds an LLM inference engine from scratch.
+## Why tinybox
 
-The project covers all six directions of the Agent Infra JD:
-- **Containerization**: Linux namespaces, cgroups, seccomp, capabilities
-- **Virtualization**: Process-level isolation without VMM overhead
-- **Ephemeral storage**: Overlayfs rootfs with auto-cleanup
-- **Virtual networking**: Proxy-based network isolation (no real NIC in sandbox)
-- **Cloud services**: HTTP management API, daemon mode, Prometheus metrics
-- **Observability**: /metrics endpoint, benchmark comparisons
+Local coding agents are often either allowed to run directly on the developer's
+machine or placed inside a general container/remote sandbox that requires image,
+environment, and lifecycle setup. tinybox targets the gap between them:
+
+- local-first and self-hosted;
+- no Docker daemon, containerd, or runc dependency;
+- no project-specific Dockerfile in the intended host-environment mode;
+- one persistent task per Agent session, with repeated isolated tool exec;
+- host/rootfs/profile environment modes without a full image platform;
+- task-private rootfs, home, caches, and volumes;
+- a deliberately small API rather than a general container platform.
+
+“Lightweight” currently means a smaller product surface and shorter local setup
+path. Startup, memory, and disk-cost claims remain to be measured by
+the MVP benchmark before they are advertised as performance advantages.
+
+The intended integration keeps the Agent UX unchanged:
+
+```text
+OpenCode / Pi / Codex / CLI Agent (target integrations)
+  ├── Agent conversation and approval
+  └── shell / compiler / package manager / tests
+                    │ stdout/stderr/exit code
+                    ▼
+              tinybox adapter
+                    ▼
+       persistent task + repeated exec
+       ├── workspace
+       ├── rootfs + private home/cache/volumes
+       ├── namespaces + cgroup + seccomp
+       └── deterministic cleanup and destroy
+```
+
+Agent-native task/exec and environment APIs are design targets. An uncommitted
+prototype may exist in the development worktree, but it is not an accepted
+implementation and is not yet a released MVP. See the active
+[MVP plan](docs/PRODUCT_PLAN.md), [product vision](docs/VISION.md), and
+[OpenCode demo design](docs/OPENCODE_DEMO.md).
+
+## Relationship to Docker and Agent Sandboxes
+
+The underlying isolation and snapshot primitives are not novel. tinybox's goal
+is to package a useful subset for personal, local Agent workflows.
+
+| Product | Execution boundary and delivery | Best fit | Difference from tinybox |
+|---|---|---|---|
+| [Docker](https://docs.docker.com/) / Docker Sandboxes | General container ecosystem plus Agent-oriented VM products | Full container workflows and stronger packaged environments | tinybox intentionally omits build, Compose, orchestration, and most image-platform features; anything tinybox does can generally be assembled with Docker and scripts. |
+| [E2B](https://www.e2b.dev/docs) | Managed Agent sandboxes with templates, SDKs, persistence, and VM isolation | Cloud Agent execution and tenant isolation | tinybox is local, self-hosted, same-kernel, and much smaller in scope; it is not an E2B security equivalent. |
+| [Anthropic Sandbox Runtime](https://github.com/anthropic-experimental/sandbox-runtime) | Lightweight local wrapper; bubblewrap on Linux plus host network proxies | Local command and MCP sandboxing | This is the closest product shape. tinybox explores a Rust runtime with cgroup ceilings, structured task audit, and its own no-NIC broker, but is less mature and Linux-only. |
+| [Daytona](https://www.daytona.io/docs/en/) | Managed sandbox infrastructure with SDK/API, process and filesystem tools, snapshots, and credential mediation | Stateful cloud Agent workspaces | tinybox deliberately avoids becoming a cloud control plane; it targets one machine or one tenant VM. |
+| [Modal Sandboxes](https://modal.com/docs/guide/sandboxes) | Cloud sandbox API with lifecycle, streaming exec, persistence, resources, and network controls | Programmatic untrusted-code execution | tinybox focuses on transparent Coding Agent tool replacement rather than a general hosted compute API. |
+
+The MVP is trying to demonstrate a narrower user benefit:
+
+- an Agent can obtain a persistent local container task without a project
+  Dockerfile;
+- repeated commands reuse an explicit environment while temporary process state
+  is cleaned after each exec;
+- Git manages source history while tinybox manages the local execution environment;
+- OpenCode can adopt the task backend without changing its reasoning loop.
+
+For detailed notes and the design lessons taken from these systems, see
+[docs/COMPETITIVE_LANDSCAPE.md](docs/COMPETITIVE_LANDSCAPE.md).
 
 ## Current Status
 
-**Phases 1–13 have code, but several are partial after the M2 re-audit.** See
+**Phases 1–13 form the experimental runtime baseline; some features remain
+partial. The Agent task/environment MVP is currently at its design-freeze gate
+and has not passed implementation or root acceptance. OpenCode, Pi, and Codex
+are not yet supported adapters.** See
 [docs/PLAN.md](docs/PLAN.md) for the authoritative, line-referenced audit and
 remediation roadmap. Per-phase status uses ✅ works / ⚠️ partial / ❌ broken.
-The implementation sequence for Agent-oriented capability management is in
-[docs/CAPABILITY_PLAN.md](docs/CAPABILITY_PLAN.md).
+The completed C0–C6 capability implementation record is in
+[docs/CAPABILITY_PLAN.md](docs/CAPABILITY_PLAN.md). New product work follows
+[docs/PRODUCT_PLAN.md](docs/PRODUCT_PLAN.md).
 
 Capability-track status: C0–C6 complete. `--policy` enforces resource and
 Landlock filesystem ceilings; allowlisted TCP egress traverses an in-sandbox
@@ -53,6 +120,10 @@ tinybox agent-host --policy /orchestrator/policies/task.json -- agent-command
 sudo ./scripts/run_capability_workloads.sh
 sudo ./scripts/benchmark_capability.sh 20
 ```
+
+The required bare-versus-protected OpenCode integration and its acceptance
+matrix are specified in [docs/OPENCODE_DEMO.md](docs/OPENCODE_DEMO.md). It is a
+design specification, not a claim that the adapter already exists.
 
 Keep the selected policy outside Agent-writable paths. The host launcher enforces
 only the immutable filesystem ceiling; high-risk execution still belongs in the

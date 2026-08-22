@@ -6,6 +6,11 @@
 > 打 tag 之前不得视为完成。
 > 实现权限描述符、Landlock、网络 broker、审计或动态 phase 时，还必须阅读
 > [docs/CAPABILITY_PLAN.md](docs/CAPABILITY_PLAN.md)，严格按 C0–C6 执行。
+> 新的产品定位与实现顺序以 [docs/VISION.md](docs/VISION.md) 和
+> [docs/PRODUCT_PLAN.md](docs/PRODUCT_PLAN.md) 为准：tinybox 是单租户 Coding
+> Agent 的轻量本地容器系统，不是权限管理产品，也不是公有云跨租户最终安全边界。
+> 当前处于 PRODUCT_PLAN G0 设计冻结阶段；G0 完成前不得继续实现 task、
+> environment 或 Agent adapter。
 
 ## 项目概览
 
@@ -44,7 +49,8 @@ tinybox 是一个从零用 Rust 实现的 Linux 沙箱运行时，类似 `runc` 
 - `seccompiler`（seccomp BPF filter 生成——Phase 5 用）
 - `tar` / `flate2`（镜像 tar 解包——Phase 9/10 用）
 - `reqwest`（Docker registry HTTP——Phase 10 用；blocking feature）
-- `aya` 或 `libbpf-rs`（eBPF——**仅研究轨 R0 用**，尚未引入）
+- `aya` 或 `libbpf-rs`（eBPF——仅在新的产品计划明确证明现有审计不足时研究，
+  尚未引入）
   （fanotify 与 Landlock 走 `libc` syscall，不需 crate）
 
 无明确理由不要加依赖。避免完整容器运行时、虚拟化库、或 OCI SDK。
@@ -170,8 +176,8 @@ curl http://127.0.0.1:8080/metrics  # → Prometheus metrics
   原型，仍缺流式、digest/config 校验及通用 registry 支持
 - 不要实现多节点编排（仅单机）
 - 不要处理 SELinux 或 AppArmor（seccomp + capabilities 是 v1.0 LSM 故事；
-  **Landlock 是研究轨显式追加**的 FS 能力维度——见
-  [docs/VISION.md](docs/VISION.md) R1，非对本规则的否定）
+  **Landlock 是 Agent tool sandbox 显式需要**的 FS 能力维度——见
+  [docs/VISION.md](docs/VISION.md)，非对本规则的否定）
 - 不要实现用户态网络（无 TUN/TAP、无 bridge）
 - 不要用 Docker、containerd、或 runc 库（本项目从零开始）
 - 不要加 Windows/macOS 支持（仅 Linux）
@@ -181,17 +187,17 @@ curl http://127.0.0.1:8080/metrics  # → Prometheus metrics
 > "no TUN/TAP, no bridge"规则并泄漏到宿主 netns（P0-1）。里程碑 M1
 > （2026-08-16）取 Option A：`src/network.rs` 删除，
 > `--network`/`-p`/`--publish` flags 移除，沙箱现在始终 unshare
-> `CLONE_NEWNET`。约束与代码树现已一致。（研究轨的网络执行仍走
-> proxy——见 [docs/VISION.md](docs/VISION.md)；eBPF 若在 R0 加入，是做
-> 审计/观测，非 bridge 替代。）
+> `CLONE_NEWNET`。约束与代码树现已一致。网络执行仍走 proxy/broker；若未来
+> 研究 eBPF，只能用于现有审计无法回答的问题，不能作为 bridge 替代。
 
 ### 优先级
 - **正确性**：沙箱必须真隔离。进程泄漏到宿主是 bug。
 - **安全**：默认 seccomp 策略必须防逃逸。`--dangerous` 是 opt-in。
 - **可度量**：每个优化都要有基准数字支撑。
-- **简洁**：**静态隔离骨架**约 2000 行 Rust（修复轨 M0–M4）。研究轨
-> （[docs/VISION.md](docs/VISION.md) 的 R0–R3）单独核算，会超出此预算。
-  优先可读代码，不要花哨抽象。
+- **简洁**：**静态隔离骨架**约 2000 行 Rust（修复轨 M0–M4）。已完成的
+  C0–C6 能力轨单独核算，会超出此预算。
+  优先可读代码，不要花哨抽象。新的 OpenCode adapter、Demo 与产品化加固
+  单独核算，见 `docs/PRODUCT_PLAN.md`。
 
 > **安全状态（2026-08-16，M1 之后）：** "默认 seccomp 策略必须防逃逸"
 > 这条优先级**现已达成**——P0-3（白名单中的逃逸原语）与 P0-4（bounding
@@ -260,7 +266,9 @@ curl http://127.0.0.1:8080/metrics  # → Prometheus metrics
   `cargo test`（58 测试）+ `cargo clippy -- -D warnings` 干净。
 
 ### 2026-08-16：愿景对齐
-- **结果**：[docs/VISION.md](docs/VISION.md)（研究北极星，R0–R3）与
+- **历史说明**：本节记录 2026-08-16 的旧 R0–R6 研究路线；该路线已被
+  2026-08-20 产品重定位取代，后续工作听 `docs/PRODUCT_PLAN.md`。
+- **结果**：当时的 VISION（研究北极星，R0–R3）与
   [docs/PLAN.md](docs/PLAN.md)（修复轨，M0–M4）对齐。依赖规则记入两者：
   **R0 可与 M2 并行；R1 只在 M2 关闭后开始**。
 - **重排优先级**：P2-1（`/dev`/`/tmp`/`/sys` 硬化）从 M3 提前到 M2——
@@ -295,16 +303,14 @@ curl http://127.0.0.1:8080/metrics  # → Prometheus metrics
   - tinybox runtime：拿到"phase + 校验通过"后 grant/revoke，**内核态
     强制**，不可绕过。
 - **R1 v1 阶段信号**用编排器显式 marker + 基础状态机交叉校验；纯行为
-  推断的阶段识别留给 R6（真正的研究赌注）。详见
-  [docs/VISION.md](docs/VISION.md) 第 3 节与第 6 节 R1。
+  推断的阶段识别当时留给 R6。此方向现已停止作为产品目标。
 
 ### 2026-08-16：部署拓扑——模式 C 混合
 - **决策**：tinybox 目标拓扑是**模式 C（混合）**——Agent runtime 留在
   host，高风险工具调用（bash/python/npm/compiler/git-clone 第三方）
   路由进 per-task 沙箱；低风险操作（read/edit workspace、LLM API 调用、
   reasoning/memory）在 host 执行。理由：契合 Coding Agent 实际工作模式
-  与"高频短命"负载对 ms 级启动的要求。详见
-  [docs/VISION.md](docs/VISION.md) §2.5。
+  与"高频短命"负载对 ms 级启动的要求。该拓扑由 2026-08-20 新定位继承。
 - **关键约束**：模式 C 不是"低风险=host 不受限"。read 若在 host 且无
   FS 策略，Agent 可直接读 `~/.ssh/id_rsa` 外泄。故能力描述符必须在
   **两层**强制：in-host 层用 Landlock 给 Agent runtime 自身套 FS 策略
@@ -342,6 +348,41 @@ curl http://127.0.0.1:8080/metrics  # → Prometheus metrics
 - **C0–C6 结论（2026-08-17）**：上述复审缺口均已有回归测试；能力轨包含
   `scripts/test_c0.sh` 至 `test_c6.sh`。这不等于生产安全：daemon 认证、持久化、
   rootless 与双向动态 FS/syscall 授权仍是明确边界。
+
+### 2026-08-20：产品重定位——单租户 Agent Tool Sandbox
+
+> **历史说明：** 本节的安全结论与 Demo 仍有效，但“仅工具执行沙箱”的产品表述
+> 已被 2026-08-22 的统一定位取代。
+
+- **目标场景**：开发者本机、企业专用 runner、租户独占 VM；OpenCode 等上层
+  Agent 保持交互，高风险 bash/python/npm/compiler/test 透明进入 tinybox。
+- **安全边界**：tinybox 防同租户内的 Agent 跑偏、恶意仓库/依赖、凭据读取、
+  直接出口和资源滥用；共享宿主内核，不单独承担公有云跨租户隔离。高风险云
+  部署使用外层 VM/microVM。
+- **职责拆分**：用户/编排器负责批准、身份和策略计算；tinybox 只验证授权快照、
+  强制、拒绝和审计。现有 phase graph 降为实验兼容能力，不再扩张为行为推断或
+  审批系统。
+- **首个产品验收**：同一 OpenCode prompt 与合成攻击 fixture，比较裸奔和
+  tinybox；正常构建/测试均成功，后者阻止 workspace 外 canary、symlink、未授权
+  网络、self-grant 和 fork bomb。详见 `docs/PRODUCT_PLAN.md` 与
+  `docs/OPENCODE_DEMO.md`。
+- **竞品基线**：承认 E2B/Docker Sandboxes 等 VM 产品在云端隔离和成熟度上更强；
+  tinybox 聚焦本地/自托管工具层集成。详见 `docs/COMPETITIVE_LANDSCAPE.md`。
+
+### 2026-08-22：统一定位——本地 Agent 轻量容器系统
+
+- **核心对象**：一个 Agent session 对应一个长期 task；每次 tool call 是 task 内
+  可独立超时、取消和回收的短期 exec。
+- **环境模型**：base/rootfs、writable layer、private home/cache、workspace 和
+  显式 volume 共同构成 environment，不再围绕固定 `/environment` 目录设计。
+- **接入策略**：OpenCode 首先验证工具级 adapter；Codex 首先验证整 Agent 包装；
+  Pi 在确认扩展接口后再决定 adapter，不预先声称透明支持。
+- **职责边界**：tinybox 提供容器隔离、环境复用和生命周期管理；权限审批、身份、
+  Agent 推理和源码历史分别属于上层编排器与 Git。
+- **可选增强**：save/restore/reset 只在核心 MVP 完成后做独立对照实验，不参与
+  项目定义，也不阻塞 MVP。
+- **实施门**：先完成 `docs/PRODUCT_PLAN.md` 的 G0，再进入 M0 代码；当前工作树中
+  的 task 原型只作为待审材料，不能视为路线已批准或功能已完成。
 
 ## 相关项目
 
