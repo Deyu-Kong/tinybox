@@ -72,6 +72,18 @@ pub fn run_sandbox_with_pid<F>(config: &SandboxConfig, on_pid: F) -> Result<i32>
 where
     F: FnOnce(nix::unistd::Pid),
 {
+    run_sandbox_with_pids(config, on_pid, |_| {})
+}
+
+pub fn run_sandbox_with_pids<F, G>(
+    config: &SandboxConfig,
+    on_supervisor_pid: F,
+    on_payload_pid: G,
+) -> Result<i32>
+where
+    F: FnOnce(nix::unistd::Pid),
+    G: FnOnce(nix::unistd::Pid),
+{
     if !cfg!(target_os = "linux") {
         bail!("tinybox only supports Linux");
     }
@@ -136,6 +148,10 @@ where
         pipe2(OFlag::O_CLOEXEC).context("failed to create setup error pipe")?;
     let setup_read_fd = setup_read_fd.into_raw_fd();
     let setup_write_fd = setup_write_fd.into_raw_fd();
+    let (payload_read_fd, payload_write_fd) =
+        pipe2(OFlag::O_CLOEXEC).context("failed to create payload pid pipe")?;
+    let payload_read_fd = payload_read_fd.into_raw_fd();
+    let payload_write_fd = payload_write_fd.into_raw_fd();
     let (mut broker_host, mut broker_child) = match &config.network_policy {
         Some(_) => {
             let (host, child) = UnixDatagram::pair().context("failed to create broker channel")?;
@@ -144,11 +160,13 @@ where
         _ => (None, None),
     };
 
+    let daemon_pid = nix::unistd::getpid();
     // SAFETY: fork() is safe here as we immediately handle namespace setup in the child.
     match unsafe { fork() }? {
         ForkResult::Parent { child } => {
             close(read_fd).ok();
             close(setup_write_fd).ok();
+            close(payload_write_fd).ok();
             drop(broker_child.take());
             let broker_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let broker_thread = broker_host.take().map(|channel| {
@@ -162,12 +180,19 @@ where
                 cg.add_process(child.as_raw() as u32)?;
             }
 
-            on_pid(child);
+            on_supervisor_pid(child);
 
             // SAFETY: write_fd is valid (just created by pipe, not yet closed).
             let borrowed = unsafe { BorrowedFd::borrow_raw(write_fd) };
             nix::unistd::write(borrowed, b"go").ok();
             close(write_fd).ok();
+
+            let mut payload_pid_bytes = [0u8; std::mem::size_of::<i32>()];
+            let payload_count = read(payload_read_fd, &mut payload_pid_bytes)
+                .context("failed to read sandbox payload pid")?;
+            close(payload_read_fd).ok();
+            let payload_pid = (payload_count == payload_pid_bytes.len())
+                .then(|| nix::unistd::Pid::from_raw(i32::from_ne_bytes(payload_pid_bytes)));
 
             let mut setup_message = String::new();
             // SAFETY: setup_read_fd is owned by this branch and converted once.
@@ -175,6 +200,43 @@ where
             setup_reader
                 .read_to_string(&mut setup_message)
                 .context("failed to read child setup status")?;
+            if setup_message.is_empty() {
+                if let Some(payload_pid) = payload_pid {
+                    on_payload_pid(payload_pid);
+                }
+                if let Some(audit) = &config.audit {
+                    if let Some(rules) = &config.filesystem_policy {
+                        audit.record(
+                            "landlock",
+                            "allow",
+                            "filesystem.ceiling",
+                            format!("{} rules", rules.len()),
+                            Some("filesystem:ceiling".into()),
+                            "Landlock ruleset installed before payload exec",
+                        );
+                    }
+                    audit.record(
+                        "runtime",
+                        "allow",
+                        "sandbox.setup",
+                        "payload",
+                        None,
+                        "namespace, filesystem, Landlock, capability and seccomp setup completed",
+                    );
+                }
+            } else {
+                if let Some(audit) = &config.audit {
+                    audit.record(
+                        "runtime",
+                        "deny",
+                        "sandbox.setup",
+                        "payload",
+                        None,
+                        setup_message.clone(),
+                    );
+                }
+            }
+
             let status = waitpid(child, None)?;
             broker_stop.store(true, std::sync::atomic::Ordering::Release);
             if let Some(thread) = broker_thread {
@@ -186,51 +248,33 @@ where
             }
             drop(cgroup);
             if !setup_message.is_empty() {
-                if let Some(audit) = &config.audit {
-                    audit.record(
-                        "runtime",
-                        "deny",
-                        "sandbox.setup",
-                        "payload",
-                        None,
-                        setup_message.clone(),
-                    );
-                }
                 return Err(SetupError(setup_message).into());
-            }
-            if let Some(audit) = &config.audit {
-                if let Some(rules) = &config.filesystem_policy {
-                    audit.record(
-                        "landlock",
-                        "allow",
-                        "filesystem.ceiling",
-                        format!("{} rules", rules.len()),
-                        Some("filesystem:ceiling".into()),
-                        "Landlock ruleset installed before payload exec",
-                    );
-                }
-                audit.record(
-                    "runtime",
-                    "allow",
-                    "sandbox.setup",
-                    "payload",
-                    None,
-                    "namespace, filesystem, Landlock, capability and seccomp setup completed",
-                );
             }
             Ok(exit_code_from_status(status))
         }
         ForkResult::Child => {
             close(write_fd).ok();
             close(setup_read_fd).ok();
+            close(payload_read_fd).ok();
             drop(broker_host.take());
+
+            if let Err(error) = set_parent_death_signal(daemon_pid) {
+                report_setup_error(setup_write_fd, &format!("{error:#}"));
+                std::process::exit(1);
+            }
 
             let mut buf = [0u8; 2];
             let _ = read(read_fd, &mut buf);
             close(read_fd).ok();
 
-            if let Err(e) = child_main(config, &program, &args, setup_write_fd, broker_child.take())
-            {
+            if let Err(e) = child_main(
+                config,
+                &program,
+                &args,
+                setup_write_fd,
+                payload_write_fd,
+                broker_child.take(),
+            ) {
                 report_setup_error(setup_write_fd, &format!("{e:#}"));
                 eprintln!("tinybox: {}", e);
                 std::process::exit(1);
@@ -245,6 +289,7 @@ fn child_main(
     program: &CString,
     args: &[CString],
     setup_write_fd: i32,
+    payload_write_fd: i32,
     broker_channel: Option<UnixDatagram>,
 ) -> Result<()> {
     // SAFETY: unshare the requested namespace set. `config.namespaces == None`
@@ -322,8 +367,19 @@ fn child_main(
 
     // SAFETY: fork() after unshare(CLONE_NEWPID) creates a process that is PID 1
     // in the new PID namespace.
+    let supervisor_pid = nix::unistd::getpid();
     match unsafe { fork() }? {
         ForkResult::Parent { child } => {
+            // The namespace-creating supervisor remains visible in the host
+            // PID namespace. Report the actual payload/keeper PID separately
+            // so task exec can bind to its root and namespace identity.
+            let pid = child.as_raw().to_ne_bytes();
+            // SAFETY: payload_write_fd is a valid pipe descriptor and pid is a
+            // fixed-size initialized byte array.
+            unsafe {
+                libc::write(payload_write_fd, pid.as_ptr().cast(), pid.len());
+            }
+            close(payload_write_fd).ok();
             close(setup_write_fd).ok();
             drop(broker_channel);
             let status = waitpid(child, None)?;
@@ -332,6 +388,8 @@ fn child_main(
             std::process::exit(code);
         }
         ForkResult::Child => {
+            close(payload_write_fd).ok();
+            set_parent_death_signal(supervisor_pid)?;
             if let Some(ref rootfs) = rootfs_config {
                 rootfs.pivot()?;
                 drop(rootfs_config);
@@ -346,7 +404,7 @@ fn child_main(
                 mount_volumes(&config.volumes, std::path::Path::new("/"))?;
             }
             let proxy_enabled = if let Some(channel) = broker_channel {
-                start_proxy_helper(channel)?;
+                start_proxy_helper(channel, setup_write_fd)?;
                 true
             } else {
                 false
@@ -384,6 +442,24 @@ fn child_main(
     }
 }
 
+fn set_parent_death_signal(expected_parent: nix::unistd::Pid) -> Result<()> {
+    // SAFETY: PR_SET_PDEATHSIG only changes the calling process's parent-death
+    // signal. SIGKILL requires no userspace handler and prevents a keeper from
+    // surviving if its trusted supervisor disappears.
+    let result = unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) };
+    if result != 0 {
+        return Err(std::io::Error::last_os_error()).context("failed to set parent-death signal");
+    }
+    let actual_parent = nix::unistd::getppid();
+    // A child born as PID 1 in a new PID namespace cannot see its parent in
+    // the outer namespace, so getppid(2) reports 0 even though PDEATHSIG is
+    // still tied to that real parent.
+    if actual_parent.as_raw() != 0 && actual_parent != expected_parent {
+        bail!("sandbox parent exited during startup");
+    }
+    Ok(())
+}
+
 fn validate_namespaces(config: &SandboxConfig) -> Result<()> {
     if !config.volumes.is_empty() && config.rootfs.is_none() {
         bail!("volume mounts require an isolated rootfs");
@@ -405,7 +481,7 @@ fn report_setup_error(fd: i32, message: &str) {
     close(fd).ok();
 }
 
-fn start_proxy_helper(channel: UnixDatagram) -> Result<()> {
+fn start_proxy_helper(channel: UnixDatagram, setup_write_fd: i32) -> Result<()> {
     let (ready_read, ready_write) = pipe().context("failed to create proxy readiness pipe")?;
     match unsafe { fork() }? {
         ForkResult::Parent { .. } => {
@@ -420,6 +496,10 @@ fn start_proxy_helper(channel: UnixDatagram) -> Result<()> {
         }
         ForkResult::Child => {
             drop(ready_read);
+            // The proxy is a long-lived sibling of the payload exec. Keeping
+            // this CLOEXEC pipe open would prevent the host from ever seeing
+            // payload setup completion.
+            close(setup_write_fd).ok();
             let ready_fd = ready_write.into_raw_fd();
             if let Err(error) = proxy::serve(channel, ready_fd) {
                 eprintln!("tinybox proxy: {error:#}");

@@ -147,7 +147,7 @@ profile 是小型、受信的 environment manifest。MVP 只需要 `host-basic`�
 
 ## 5. 实施里程碑
 
-### G0：设计冻结（进入编码前）
+### G0：设计冻结（进入编码前） ✅ 2026-08-22
 
 - 固定 task、environment、exec、adapter 四个术语及其所有权；
 - 固定长期 task + 短期 exec 的进程与资源生命周期；
@@ -157,9 +157,12 @@ profile 是小型、受信的 environment manifest。MVP 只需要 `host-basic`�
 - 为 M0–M3 各写出可执行验收矩阵，再开始功能实现。
 
 完成门：架构、API、威胁边界、验收矩阵无互相矛盾项；README 不把目标接口写成
-已实现能力。**当前阶段只完成 G0 文档评审，不推进 M0 代码。**
+已实现能力。
 
-### M0：收稳 persistent task
+完成记录：`c321f2f` 固定了定位、生命周期、环境来源、集成边界及 M0–M5
+验收门。随后才开始审计工作树中的 task 原型。
+
+### M0：收稳 persistent task ✅ 2026-08-22
 
 - 修复 daemon 退出后的 keeper/cgroup/mount 残留；
 - 通用 sandbox DELETE 不能绕过 task token；
@@ -169,6 +172,14 @@ profile 是小型、受信的 environment manifest。MVP 只需要 `host-basic`�
 - root 验收 task create、两次 exec、timeout、destroy 和 daemon crash。
 
 完成门：每条路径都无 PID、exec cgroup、task cgroup、mount 和状态目录残留。
+
+完成记录：task API 使用 secret token；keeper 以 PID start time 与 cgroup 双重校验；
+每次 exec 使用独立 cgroup，正常退出、后台进程和 timeout 均执行整组回收；destroy
+等待 task cgroup 为空并删除后才返回。旧 sandbox DELETE 对 task 返回 403。daemon
+遭 `SIGKILL` 时 PDEATHSIG 终止 supervisor/keeper，替代 daemon 仅清扫已空的孤儿
+task cgroup，不触碰其它活动 daemon。MVP 的 cancel 契约为 timeout 或 destroy 整个
+task，尚不提供保留 task 的独立 exec cancel API。root 验收见
+`tests/task_session.rs`。
 
 ### M1：Environment model
 

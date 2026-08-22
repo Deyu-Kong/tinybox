@@ -1,9 +1,12 @@
 use crate::audit::AuditSink;
 use crate::cgroup::Cgroup;
 use crate::policy::{CapabilityDescriptor, NetworkRule};
-use crate::sandbox::{run_sandbox_with_pid, SandboxConfig, SetupError};
+use crate::sandbox::{run_sandbox_with_pid, run_sandbox_with_pids, SandboxConfig, SetupError};
+use crate::task::{self, ExecRequest, ExecTarget};
+use anyhow::Context;
 use axum::{
     extract::{Path, State},
+    http::HeaderMap,
     http::{header::CONTENT_TYPE, StatusCode},
     response::IntoResponse,
     routing::{get, post},
@@ -41,6 +44,7 @@ struct Sandbox {
     #[serde(skip_serializing_if = "Option::is_none")]
     phase: Option<String>,
     generation: u64,
+    kind: String,
     #[serde(skip)]
     audit: AuditSink,
     #[serde(skip)]
@@ -49,6 +53,16 @@ struct Sandbox {
     network_policy: Option<Arc<std::sync::RwLock<Vec<NetworkRule>>>>,
     #[serde(skip)]
     cgroup_path: PathBuf,
+    #[serde(skip)]
+    keeper_pid: Option<i32>,
+    #[serde(skip)]
+    keeper_start_time: Option<u64>,
+    #[serde(skip)]
+    task_token: Option<String>,
+    #[serde(skip)]
+    task_env: Vec<String>,
+    #[serde(skip)]
+    exec_lock: Arc<Mutex<()>>,
 }
 
 #[derive(Deserialize)]
@@ -86,7 +100,21 @@ struct PhaseRequest {
     expected_generation: u64,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TaskCreateRequest {
+    workspace: String,
+    policy: CapabilityDescriptor,
+    #[serde(default)]
+    env: Vec<String>,
+    #[serde(default)]
+    hostname: Option<String>,
+}
+
 pub async fn serve(listen: SocketAddr) -> anyhow::Result<()> {
+    let listener = tokio::net::TcpListener::bind(listen).await?;
+    task::cleanup_orphaned_task_cgroups()
+        .context("failed to clean task state left by an interrupted daemon")?;
     let state = AppState {
         sandboxes: Arc::new(Mutex::new(HashMap::new())),
         next_id: Arc::new(AtomicU64::new(1)),
@@ -97,9 +125,11 @@ pub async fn serve(listen: SocketAddr) -> anyhow::Result<()> {
         .route("/api/sandboxes/:id/audit", get(audit_events))
         .route("/api/sandboxes/:id/audit/summary", get(audit_summary))
         .route("/api/sandboxes/:id/phase", post(change_phase))
+        .route("/api/tasks", post(create_task))
+        .route("/api/tasks/:id", get(get_one).delete(remove_task))
+        .route("/api/tasks/:id/exec", post(exec_task))
         .route("/metrics", get(metrics))
         .with_state(state);
-    let listener = tokio::net::TcpListener::bind(listen).await?;
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -183,10 +213,16 @@ async fn create(
         policy_hash: policy_hash.clone(),
         phase: initial_phase.as_ref().map(|phase| phase.name.clone()),
         generation: 0,
+        kind: "sandbox".into(),
         audit: audit.clone(),
         descriptor: descriptor.clone(),
         network_policy: network_policy.clone(),
         cgroup_path,
+        keeper_pid: None,
+        keeper_start_time: None,
+        task_token: None,
+        task_env: Vec::new(),
+        exec_lock: Arc::new(Mutex::new(())),
     };
     state.sandboxes.lock().unwrap().insert(id.clone(), entry);
     let initial_phase_name = initial_phase.as_ref().map(|phase| phase.name.clone());
@@ -259,6 +295,373 @@ async fn create(
             serde_json::json!({"id": id, "status": "running", "policy_hash": policy_hash, "phase": initial_phase_name, "generation": 0}),
         ),
     )
+}
+
+async fn create_task(
+    State(state): State<AppState>,
+    Json(req): Json<TaskCreateRequest>,
+) -> impl IntoResponse {
+    let workspace = match std::fs::canonicalize(&req.workspace) {
+        Ok(path) if path.is_dir() => path,
+        Ok(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error":"workspace must be a directory"})),
+            )
+        }
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error":format!("invalid workspace: {error}")})),
+            )
+        }
+    };
+    let loaded = match req.policy.compile() {
+        Ok(policy) => policy,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error":format!("invalid policy: {error:#}")})),
+            )
+        }
+    };
+    if !loaded.descriptor.phases.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error":"task API accepts static policies only"})),
+        );
+    }
+    if loaded.descriptor.filesystem.iter().any(|rule| {
+        rule.path != std::path::Path::new("/workspace")
+            && !rule.path.starts_with("/workspace/")
+            && rule.path != std::path::Path::new("/tmp")
+    }) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(
+                serde_json::json!({"error":"task filesystem rules must stay under /workspace or /tmp"}),
+            ),
+        );
+    }
+    if let Err(error) = validate_task_env(&req.env) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error":error.to_string()})),
+        );
+    }
+
+    let id = format!("task-{}", state.next_id.fetch_add(1, Ordering::Relaxed));
+    let token = match generate_task_token() {
+        Ok(token) => token,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    serde_json::json!({"error":format!("failed to create task token: {error:#}")}),
+                ),
+            )
+        }
+    };
+    let cgroup_name = format!("tinybox-{id}");
+    let cgroup_path = PathBuf::from("/sys/fs/cgroup").join(&cgroup_name);
+    let policy_hash = loaded.hash.clone();
+    let descriptor = loaded.descriptor.clone();
+    let network_policy = Arc::new(std::sync::RwLock::new(descriptor.network.clone()));
+    let audit = AuditSink::new(id.clone(), Some(policy_hash.clone()));
+    audit.record(
+        "runtime",
+        "allow",
+        "task.create",
+        "/workspace",
+        Some("task:ceiling".into()),
+        "persistent Agent task accepted",
+    );
+    let entry = Sandbox {
+        id: id.clone(),
+        status: "starting".into(),
+        exit_code: None,
+        pid: None,
+        error: None,
+        policy_hash: Some(policy_hash.clone()),
+        phase: None,
+        generation: 0,
+        kind: "task".into(),
+        audit: audit.clone(),
+        descriptor: Some(descriptor.clone()),
+        network_policy: Some(network_policy.clone()),
+        cgroup_path: cgroup_path.clone(),
+        keeper_pid: None,
+        keeper_start_time: None,
+        task_token: Some(token.clone()),
+        task_env: req.env.clone(),
+        exec_lock: Arc::new(Mutex::new(())),
+    };
+    state.sandboxes.lock().unwrap().insert(id.clone(), entry);
+
+    let state_clone = state.clone();
+    let id_clone = id.clone();
+    tokio::task::spawn_blocking(move || {
+        let resources = &descriptor.resources;
+        let config = SandboxConfig {
+            cgroup_name: Some(cgroup_name),
+            command: vec!["/bin/sleep".into(), "2147483647".into()],
+            hostname: req.hostname,
+            rootfs: Some(PathBuf::from("/")),
+            root_readonly: false,
+            env: req.env,
+            proxy: None,
+            volumes: vec![format!("{}:/workspace", workspace.display())],
+            memory: Some(resources.memory_bytes),
+            cpus: Some(resources.cpus),
+            cpu_quota: None,
+            cpu_period: None,
+            pids_limit: Some(resources.pids),
+            dangerous: false,
+            filesystem_policy: Some(descriptor.filesystem.clone()),
+            network_policy: Some(network_policy),
+            audit: Some(audit),
+            namespaces: None,
+            cwd: Some("/workspace".into()),
+            uid: 0,
+            gid: 0,
+        };
+        let supervisor_state = state_clone.clone();
+        let supervisor_id = id_clone.clone();
+        let keeper_state = state_clone.clone();
+        let keeper_id = id_clone.clone();
+        let result = run_sandbox_with_pids(
+            &config,
+            move |pid| {
+                if let Some(task) = supervisor_state
+                    .sandboxes
+                    .lock()
+                    .unwrap()
+                    .get_mut(&supervisor_id)
+                {
+                    task.pid = Some(pid.as_raw());
+                }
+            },
+            move |pid| {
+                if let Some(task) = keeper_state.sandboxes.lock().unwrap().get_mut(&keeper_id) {
+                    task.keeper_pid = Some(pid.as_raw());
+                    task.keeper_start_time = task::process_start_time(pid.as_raw()).ok();
+                    if task.keeper_start_time.is_some() {
+                        task.status = "running".into();
+                    }
+                }
+            },
+        );
+        if let Some(task) = state_clone.sandboxes.lock().unwrap().get_mut(&id_clone) {
+            match result {
+                Ok(code) => {
+                    task.status = "completed".into();
+                    task.exit_code = Some(code);
+                }
+                Err(error) => {
+                    task.status = if error.downcast_ref::<SetupError>().is_some() {
+                        "setup_failed".into()
+                    } else {
+                        "failed".into()
+                    };
+                    task.error = Some(format!("{error:#}"));
+                }
+            }
+        }
+    });
+
+    (
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({
+            "id": id,
+            "status": "starting",
+            "token": token,
+            "policy_hash": policy_hash,
+            "workspace": "/workspace"
+        })),
+    )
+}
+
+async fn exec_task(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<ExecRequest>,
+) -> impl IntoResponse {
+    let Some(token) = task_token(&headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let task = {
+        let sandboxes = state.sandboxes.lock().unwrap();
+        let Some(task) = sandboxes.get(&id) else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        if task.kind != "task"
+            || !task
+                .task_token
+                .as_deref()
+                .is_some_and(|expected| constant_time_eq(expected, token))
+        {
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+        if task.status != "running" {
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({"error":format!("task is {}", task.status)})),
+            )
+                .into_response();
+        }
+        task.clone()
+    };
+    let Some(keeper_pid) = task.keeper_pid else {
+        return StatusCode::CONFLICT.into_response();
+    };
+    let Some(keeper_start_time) = task.keeper_start_time else {
+        return StatusCode::CONFLICT.into_response();
+    };
+    let filesystem_policy = task
+        .descriptor
+        .as_ref()
+        .map(|policy| policy.filesystem.clone())
+        .unwrap_or_default();
+    let target = ExecTarget {
+        keeper_pid,
+        keeper_start_time,
+        cgroup_path: task.cgroup_path.clone(),
+        filesystem_policy,
+        base_env: task.task_env.clone(),
+    };
+    let audit = task.audit.clone();
+    let exec_lock = task.exec_lock.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let _guard = exec_lock.lock().unwrap();
+        task::exec_in_task(&target, &request)
+    })
+    .await;
+    match result {
+        Ok(Ok(response)) => {
+            audit.record(
+                "runtime",
+                "allow",
+                "task.exec",
+                format!("exit={}", response.exit_code),
+                Some("task:exec".into()),
+                if response.timed_out {
+                    "tool call timed out"
+                } else {
+                    "tool call completed"
+                },
+            );
+            (StatusCode::OK, Json(serde_json::json!(response))).into_response()
+        }
+        Ok(Err(error)) => {
+            audit.record(
+                "runtime",
+                "deny",
+                "task.exec",
+                "setup",
+                Some("task:exec".into()),
+                format!("{error:#}"),
+            );
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({"error":format!("task exec failed: {error:#}")})),
+            )
+                .into_response()
+        }
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error":format!("task exec worker failed: {error}")})),
+        )
+            .into_response(),
+    }
+}
+
+async fn remove_task(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let Some(token) = task_token(&headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let (supervisor_pid, cgroup_path) = {
+        let mut sandboxes = state.sandboxes.lock().unwrap();
+        let Some(task) = sandboxes.get_mut(&id) else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        if task.kind != "task"
+            || !task
+                .task_token
+                .as_deref()
+                .is_some_and(|expected| constant_time_eq(expected, token))
+        {
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+        let Some(supervisor_pid) = task.pid else {
+            return StatusCode::CONFLICT.into_response();
+        };
+        task.status = "stopping".into();
+        (supervisor_pid, task.cgroup_path.clone())
+    };
+
+    let result =
+        tokio::task::spawn_blocking(move || task::destroy_task(supervisor_pid, &cgroup_path)).await;
+    let mut sandboxes = state.sandboxes.lock().unwrap();
+    let cleanup_error = match result {
+        Ok(Ok(())) => None,
+        Ok(Err(error)) => Some(format!("{error:#}")),
+        Err(error) => Some(format!("cleanup worker failed: {error}")),
+    };
+    if let Some(error) = cleanup_error {
+        if let Some(task) = sandboxes.get_mut(&id) {
+            task.status = "cleanup_failed".into();
+            task.error = Some(format!("task cleanup failed: {error}"));
+        }
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error":format!("task cleanup failed: {error}")})),
+        )
+            .into_response();
+    }
+    sandboxes.remove(&id);
+    StatusCode::NO_CONTENT.into_response()
+}
+
+fn task_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get("x-tinybox-task-token")
+        .and_then(|value| value.to_str().ok())
+}
+
+fn constant_time_eq(expected: &str, provided: &str) -> bool {
+    if expected.len() != provided.len() {
+        return false;
+    }
+    expected
+        .bytes()
+        .zip(provided.bytes())
+        .fold(0u8, |difference, (left, right)| difference | (left ^ right))
+        == 0
+}
+
+fn generate_task_token() -> anyhow::Result<String> {
+    use std::io::Read;
+    let mut bytes = [0u8; 32];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn validate_task_env(values: &[String]) -> anyhow::Result<()> {
+    const ALLOWED: &[&str] = &["PATH", "LANG", "LC_ALL", "TERM", "HOME"];
+    for value in values {
+        let Some((name, _)) = value.split_once('=') else {
+            anyhow::bail!("task env entries must use NAME=VALUE");
+        };
+        if !ALLOWED.contains(&name) {
+            anyhow::bail!("task environment variable is not allowlisted: {name}");
+        }
+    }
+    Ok(())
 }
 
 async fn list(State(state): State<AppState>) -> Json<Vec<Sandbox>> {
@@ -381,6 +784,9 @@ async fn change_phase(
 async fn remove(Path(id): Path<String>, State(state): State<AppState>) -> StatusCode {
     let mut sandboxes = state.sandboxes.lock().unwrap();
     if let Some(sb) = sandboxes.get(&id) {
+        if sb.kind == "task" {
+            return StatusCode::FORBIDDEN;
+        }
         if sb.status == "running" || sb.status == "failed" || sb.status == "setup_failed" {
             if let Some(pid) = sb.pid {
                 let _ = kill(Pid::from_raw(pid), Signal::SIGKILL);
@@ -423,5 +829,19 @@ mod tests {
     #[test]
     fn parses_listen() {
         assert_eq!(parse_listen("127.0.0.1:8080").unwrap().port(), 8080);
+    }
+
+    #[test]
+    fn task_tokens_use_exact_constant_time_comparison() {
+        assert!(constant_time_eq("abc123", "abc123"));
+        assert!(!constant_time_eq("abc123", "abc124"));
+        assert!(!constant_time_eq("abc123", "short"));
+    }
+
+    #[test]
+    fn task_environment_is_allowlisted() {
+        assert!(validate_task_env(&["PATH=/usr/bin:/bin".into(), "LANG=C".into()]).is_ok());
+        assert!(validate_task_env(&["AWS_SECRET_ACCESS_KEY=secret".into()]).is_err());
+        assert!(validate_task_env(&["MALFORMED".into()]).is_err());
     }
 }

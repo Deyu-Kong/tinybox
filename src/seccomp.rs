@@ -391,6 +391,9 @@ fn build_rules() -> Result<BTreeMap<i64, Vec<SeccompRule>>> {
         libc::SYS_readlinkat,
         libc::SYS_fchmodat,
         libc::SYS_faccessat,
+        // Modern libc and shells use faccessat2 for effective-ID access
+        // checks. Landlock still mediates the referenced path.
+        libc::SYS_faccessat2,
         libc::SYS_pselect6,
         libc::SYS_ppoll,
         libc::SYS_set_robust_list,

@@ -12,6 +12,7 @@ mod registry;
 mod rootfs;
 mod sandbox;
 mod seccomp;
+mod task;
 
 use anyhow::{Context, Result};
 use cgroup::parse_memory;
