@@ -151,6 +151,31 @@ pub fn apply_seccomp_filter(dangerous: bool) -> Result<()> {
         return Ok(());
     }
 
+    // clone3 passes its flags through a pointer, so classic seccomp cannot
+    // safely admit thread creation while rejecting CLONE_NEW* namespaces.
+    // Return ENOSYS for clone3 and io_uring: modern runtimes then fall back to
+    // clone(2) and epoll respectively,
+    // whose flags are filtered below. This keeps rustc and other threaded
+    // tools usable without opening an uninspectable namespace-creation path.
+    let mut fallback_rules = BTreeMap::new();
+    for syscall in [
+        libc::SYS_clone3,
+        libc::SYS_io_uring_setup,
+        libc::SYS_io_uring_enter,
+        libc::SYS_io_uring_register,
+    ] {
+        fallback_rules.insert(syscall, vec![]);
+    }
+    let fallback_filter = SeccompFilter::new(
+        fallback_rules,
+        SeccompAction::Allow,
+        SeccompAction::Errno(libc::ENOSYS as u32),
+        std::env::consts::ARCH.try_into().unwrap(),
+    )?;
+    let fallback_program: BpfProgram = fallback_filter.try_into()?;
+    apply_filter_all_threads(&fallback_program)
+        .context("failed to apply compatibility fallback filter")?;
+
     let rules = build_rules()?;
 
     // SAFETY: this is an allow-list filter; any syscall not explicitly
@@ -459,7 +484,8 @@ fn build_rules() -> Result<BTreeMap<i64, Vec<SeccompRule>>> {
     // sandboxed process cannot create fresh namespaces to sidestep the
     // isolation we set up (NEWPID/NEWNS/NEWUTS/NEWNET). Normal fork/exec
     // (e.g. musl's `fork()` = `clone(SIGCHLD)`) is unaffected because it
-    // sets none of these bits. `clone3` is not in the allow-list at all.
+    // sets none of these bits. `clone3` is converted to ENOSYS by the
+    // preceding filter so libc reaches this inspectable fallback.
     let clone_rule = SeccompRule::new(vec![SeccompCondition::new(
         0,
         SeccompCmpArgLen::Qword,
@@ -467,6 +493,13 @@ fn build_rules() -> Result<BTreeMap<i64, Vec<SeccompRule>>> {
         0,
     )?])?;
     rules.insert(libc::SYS_clone, vec![clone_rule]);
+    // The first stacked filter always converts clone3 to ENOSYS. It must also
+    // be admitted by this allow-list; otherwise Trap would take precedence
+    // and libc could not fall back to the argument-filtered clone(2).
+    rules.insert(libc::SYS_clone3, vec![]);
+    rules.insert(libc::SYS_io_uring_setup, vec![]);
+    rules.insert(libc::SYS_io_uring_enter, vec![]);
+    rules.insert(libc::SYS_io_uring_register, vec![]);
 
     Ok(rules)
 }

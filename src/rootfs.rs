@@ -12,6 +12,11 @@ pub struct RootfsConfig {
 
 impl RootfsConfig {
     pub fn new(rootfs_path: PathBuf, readonly: bool) -> Result<Self> {
+        let work_dir = std::env::temp_dir().join(format!("tinybox-{}", std::process::id()));
+        Self::with_work_dir(rootfs_path, readonly, work_dir)
+    }
+
+    pub fn with_work_dir(rootfs_path: PathBuf, readonly: bool, work_dir: PathBuf) -> Result<Self> {
         if !rootfs_path.exists() {
             anyhow::bail!("rootfs path does not exist: {:?}", rootfs_path);
         }
@@ -19,7 +24,6 @@ impl RootfsConfig {
             anyhow::bail!("rootfs path is not a directory: {:?}", rootfs_path);
         }
 
-        let work_dir = std::env::temp_dir().join(format!("tinybox-{}", std::process::id()));
         Ok(Self {
             rootfs_path,
             work_dir,

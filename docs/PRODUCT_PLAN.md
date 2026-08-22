@@ -181,7 +181,7 @@ task cgroup，不触碰其它活动 daemon。MVP 的 cancel 契约为 timeout �
 task，尚不提供保留 task 的独立 exec cancel API。root 验收见
 `tests/task_session.rs`。
 
-### M1：Environment model
+### M1：Environment model ✅ 2026-08-22
 
 - 引入 environment manifest 与 task state directory；
 - 拆分 base rootfs、writable state、private home、cache 和 volumes；
@@ -192,6 +192,15 @@ task，尚不提供保留 task 的独立 exec cancel API。root 验收见
 
 完成门：三个生态至少各有一个 build/test smoke；宿主凭据和非声明 home 不可见；
 task 内环境写入不污染对应宿主目录。
+
+完成记录：task 创建接受版本化 environment manifest 的 host、rootfs 或 profile
+来源，并在 `/var/lib/tinybox/tasks/<id>` 保存 overlay writable layer、private home、
+cache 与映射清单。workspace 为 direct，home/cache 为 private-write，发现的用户态
+rustup/nvm 工具链只获得 read+execute；未知 profile 与非法 volume fail closed 且不
+残留 state。Rust、Node、Python 均通过真实工具 smoke 和跨 exec cache 持久化 root
+验收；合成 secret、symlink escape 与只读工具路径写入均被拒。为兼容现代 rustc/node，
+seccomp 通过前置 filter 将不可安全参数过滤的 `clone3`/`io_uring_*` 返回 ENOSYS，
+使其回退到受参数过滤的 `clone`/epoll，而不是直接放行这些 syscall。
 
 ### M2：Agent CLI 与生命周期
 

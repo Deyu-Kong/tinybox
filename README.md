@@ -58,9 +58,9 @@ OpenCode / Pi / Codex / CLI Agent (target integrations)
        └── deterministic cleanup and destroy
 ```
 
-Agent-native task/exec and environment APIs are design targets. An uncommitted
-prototype may exist in the development worktree, but it is not an accepted
-implementation and is not yet a released MVP. See the active
+Agent-native task/exec and environment APIs have passed their M0/M1 root
+acceptance gates. The Agent CLI and adapters are still implementation targets,
+so this is not yet a released MVP. See the active
 [MVP plan](docs/PRODUCT_PLAN.md), [product vision](docs/VISION.md), and
 [OpenCode demo design](docs/OPENCODE_DEMO.md).
 
@@ -92,9 +92,9 @@ For detailed notes and the design lessons taken from these systems, see
 ## Current Status
 
 **Phases 1–13 form the experimental runtime baseline; some features remain
-partial. The Agent task/environment MVP is currently at its design-freeze gate
-and has not passed implementation or root acceptance. OpenCode, Pi, and Codex
-are not yet supported adapters.** See
+partial. Persistent task/exec and host/rootfs/profile environments have passed
+M0/M1 root acceptance. The Agent CLI, OpenCode, Pi, and Codex adapters are not
+yet implemented or supported.** See
 [docs/PLAN.md](docs/PLAN.md) for the authoritative, line-referenced audit and
 remediation roadmap. Per-phase status uses ✅ works / ⚠️ partial / ❌ broken.
 The completed C0–C6 capability implementation record is in

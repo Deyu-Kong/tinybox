@@ -2,6 +2,7 @@ mod audit;
 mod broker;
 mod cgroup;
 mod daemon;
+mod environment;
 mod exec;
 mod image;
 mod landlock;
@@ -262,6 +263,7 @@ fn main() -> Result<()> {
                 command,
                 hostname,
                 rootfs: root.map(std::path::PathBuf::from),
+                rootfs_work_dir: None,
                 root_readonly,
                 env: oci_env,
                 proxy,

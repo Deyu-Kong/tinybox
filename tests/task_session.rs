@@ -74,7 +74,7 @@ fn persistent_task_exec_is_stateful_and_policy_enforced() {
     wait_ready();
     let create = json!({
         "workspace": workspace,
-        "env": ["PATH=/usr/bin:/bin", "HOME=/tmp", "LANG=C"],
+        "env": ["PATH=/usr/bin:/bin", "LANG=C"],
         "policy": {
             "version": 1,
             "filesystem": [{"path":"/workspace", "access":"read_write"}],
@@ -129,6 +129,40 @@ fn persistent_task_exec_is_stateful_and_policy_enforced() {
     let second: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(second["exit_code"], 0);
     assert_eq!(second["stdout"], "persisted");
+
+    let (_, body) = request(
+        "POST",
+        &exec_path,
+        Some(token),
+        Some(&json!({
+            "command":["/bin/sh","-c","printf private > \"$HOME/.cache/marker\""],
+            "timeout_ms":5000
+        })),
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["exit_code"],
+        0
+    );
+    let (_, body) = request(
+        "POST",
+        &exec_path,
+        Some(token),
+        Some(&json!({"command":["/bin/cat","/home/agent/.cache/marker"],"timeout_ms":5000})),
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["stdout"],
+        "private"
+    );
+    let manifest_path = format!("/var/lib/tinybox/tasks/{id}/environment.json");
+    let manifest: Value = serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    assert_eq!(manifest["source"], "host");
+    assert!(manifest["mappings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|mapping| {
+            mapping["target"] == "/home/agent" && mapping["mode"] == "private_write"
+        }));
 
     for denied_path in [
         secret.to_string_lossy().into_owned(),
@@ -192,6 +226,7 @@ fn persistent_task_exec_is_stateful_and_policy_enforced() {
     wait_gone(std::path::Path::new(&format!(
         "/sys/fs/cgroup/tinybox-{id}"
     )));
+    assert!(!std::path::Path::new(&format!("/var/lib/tinybox/tasks/{id}")).exists());
 
     let (status, body) = request("POST", "/api/tasks", None, Some(&create));
     assert_eq!(status, 202, "crash-recovery task create failed: {body}");
@@ -219,6 +254,145 @@ fn persistent_task_exec_is_stateful_and_policy_enforced() {
     let mut replacement = daemon();
     wait_ready();
     wait_gone(std::path::Path::new(&crashed_cgroup));
+    wait_gone(std::path::Path::new(&format!(
+        "/var/lib/tinybox/tasks/{crashed_id}"
+    )));
+
+    let mut invalid_profile = create.clone();
+    invalid_profile["environment"] = json!({"source":"profile","name":"missing"});
+    let (status, _) = request("POST", "/api/tasks", None, Some(&invalid_profile));
+    assert_eq!(status, 400);
+    assert!(!std::path::Path::new("/var/lib/tinybox/tasks/task-1").exists());
+
+    std::fs::write(
+        workspace.join("smoke.rs"),
+        "fn main(){println!(\"rust-ok\");}",
+    )
+    .unwrap();
+    std::fs::write(workspace.join("smoke.js"), "console.log('node-ok')").unwrap();
+    std::fs::write(workspace.join("smoke.py"), "print('python-ok')").unwrap();
+    let profile_cases = [
+        (
+            "rust",
+            vec!["/bin/sh", "-c", "rustc /workspace/smoke.rs -o /home/agent/.cache/smoke-rust && /home/agent/.cache/smoke-rust"],
+            "rust-ok",
+        ),
+        ("node", vec!["node", "/workspace/smoke.js"], "node-ok"),
+        ("python", vec!["python3", "/workspace/smoke.py"], "python-ok"),
+    ];
+    for (profile, command, expected) in profile_cases {
+        let mut profile_create = create.clone();
+        profile_create["environment"] = json!({"source":"profile","name":profile});
+        let (status, body) = request("POST", "/api/tasks", None, Some(&profile_create));
+        assert_eq!(status, 202, "{profile} profile create failed: {body}");
+        let task: Value = serde_json::from_str(&body).unwrap();
+        let profile_id = task["id"].as_str().unwrap();
+        let profile_token = task["token"].as_str().unwrap();
+        for _ in 0..100 {
+            let (_, body) = request("GET", &format!("/api/tasks/{profile_id}"), None, None);
+            if body.contains("\"running\"") {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let (_, body) = request(
+            "POST",
+            &format!("/api/tasks/{profile_id}/exec"),
+            Some(profile_token),
+            Some(&json!({"command":command,"timeout_ms":30000})),
+        );
+        let result: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(result["exit_code"], 0, "{profile} smoke failed: {body}");
+        assert!(result["stdout"].as_str().unwrap().contains(expected));
+        let (_, body) = request(
+            "POST",
+            &format!("/api/tasks/{profile_id}/exec"),
+            Some(profile_token),
+            Some(
+                &json!({"command":["/bin/sh","-c","printf reused > \"$XDG_CACHE_HOME/profile-marker\""],"timeout_ms":5000}),
+            ),
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap()["exit_code"],
+            0
+        );
+        let (_, body) = request(
+            "POST",
+            &format!("/api/tasks/{profile_id}/exec"),
+            Some(profile_token),
+            Some(
+                &json!({"command":["/bin/cat","/home/agent/.cache/profile-marker"],"timeout_ms":5000}),
+            ),
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap()["stdout"],
+            "reused"
+        );
+
+        let manifest: Value = serde_json::from_slice(
+            &std::fs::read(format!(
+                "/var/lib/tinybox/tasks/{profile_id}/environment.json"
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        if let Some(mapping) = manifest["mappings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|mapping| mapping["mode"] == "read_only")
+        {
+            let target = mapping["target"].as_str().unwrap();
+            let probe = format!("{target}/.tinybox-write-probe");
+            let (_, body) = request(
+                "POST",
+                &format!("/api/tasks/{profile_id}/exec"),
+                Some(profile_token),
+                Some(&json!({"command":["/usr/bin/touch",probe],"timeout_ms":5000})),
+            );
+            assert_ne!(
+                serde_json::from_str::<Value>(&body).unwrap()["exit_code"],
+                0
+            );
+        }
+        let (status, body) = request(
+            "DELETE",
+            &format!("/api/tasks/{profile_id}"),
+            Some(profile_token),
+            None,
+        );
+        assert_eq!(status, 204, "{profile} destroy failed: {body}");
+    }
+
+    let mut rootfs_create = create.clone();
+    rootfs_create["environment"] = json!({"source":"rootfs","path":"/"});
+    let (status, body) = request("POST", "/api/tasks", None, Some(&rootfs_create));
+    assert_eq!(status, 202, "rootfs environment create failed: {body}");
+    let rootfs_task: Value = serde_json::from_str(&body).unwrap();
+    let rootfs_id = rootfs_task["id"].as_str().unwrap();
+    let rootfs_token = rootfs_task["token"].as_str().unwrap();
+    for _ in 0..100 {
+        let (_, body) = request("GET", &format!("/api/tasks/{rootfs_id}"), None, None);
+        if body.contains("\"running\"") {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    let manifest: Value = serde_json::from_slice(
+        &std::fs::read(format!(
+            "/var/lib/tinybox/tasks/{rootfs_id}/environment.json"
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["source"], "rootfs");
+    let (status, _) = request(
+        "DELETE",
+        &format!("/api/tasks/{rootfs_id}"),
+        Some(rootfs_token),
+        None,
+    );
+    assert_eq!(status, 204);
     let _ = replacement.kill();
     let _ = replacement.wait();
 }

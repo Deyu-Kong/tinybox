@@ -79,7 +79,9 @@ pub fn enforce(rules: &[FsRule]) -> Result<()> {
             for rule in rules {
                 let access = match rule.access {
                     FsAccess::Read => READ_ACCESS,
+                    FsAccess::ReadExecute => READ_ACCESS | ACCESS_EXECUTE,
                     FsAccess::ReadWrite => READ_ACCESS | WRITE_ACCESS,
+                    FsAccess::ReadWriteExecute => READ_ACCESS | WRITE_ACCESS | ACCESS_EXECUTE,
                 };
                 add_path_rule(ruleset_fd, &rule.path, access, true)?;
             }

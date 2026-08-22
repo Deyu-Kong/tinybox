@@ -31,7 +31,9 @@ pub struct FsRule {
 #[serde(rename_all = "snake_case")]
 pub enum FsAccess {
     Read,
+    ReadExecute,
     ReadWrite,
+    ReadWriteExecute,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]

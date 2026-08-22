@@ -31,6 +31,7 @@ pub struct SandboxConfig {
     pub command: Vec<String>,
     pub hostname: Option<String>,
     pub rootfs: Option<PathBuf>,
+    pub rootfs_work_dir: Option<PathBuf>,
     pub root_readonly: bool,
     pub env: Vec<String>,
     pub proxy: Option<String>,
@@ -352,7 +353,14 @@ fn child_main(
     }
 
     let rootfs_config = if let Some(ref rootfs_path) = config.rootfs {
-        let rootfs = RootfsConfig::new(rootfs_path.clone(), config.root_readonly)?;
+        let rootfs = match &config.rootfs_work_dir {
+            Some(work_dir) => RootfsConfig::with_work_dir(
+                rootfs_path.clone(),
+                config.root_readonly,
+                work_dir.clone(),
+            )?,
+            None => RootfsConfig::new(rootfs_path.clone(), config.root_readonly)?,
+        };
         rootfs.setup()?;
         // P2-1: mount /dev /tmp /sys /proc under merged BEFORE pivot, while the
         // host's /dev device nodes are still reachable as bind sources.
@@ -603,6 +611,7 @@ mod tests {
             command: vec![],
             hostname: None,
             rootfs: None,
+            rootfs_work_dir: None,
             root_readonly: false,
             env: Vec::new(),
             proxy: None,
@@ -631,6 +640,7 @@ mod tests {
             command: vec!["true".into()],
             hostname: None,
             rootfs: None,
+            rootfs_work_dir: None,
             root_readonly: false,
             env: Vec::new(),
             proxy: None,
@@ -659,6 +669,7 @@ mod tests {
             command: vec!["true".into()],
             hostname: None,
             rootfs: None,
+            rootfs_work_dir: None,
             root_readonly: false,
             env: Vec::new(),
             proxy: None,

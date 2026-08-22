@@ -1,6 +1,7 @@
 use crate::audit::AuditSink;
 use crate::cgroup::Cgroup;
-use crate::policy::{CapabilityDescriptor, NetworkRule};
+use crate::environment::{self, EnvironmentRequest, EnvironmentVolume};
+use crate::policy::{CapabilityDescriptor, FsRule, NetworkRule};
 use crate::sandbox::{run_sandbox_with_pid, run_sandbox_with_pids, SandboxConfig, SetupError};
 use crate::task::{self, ExecRequest, ExecTarget};
 use anyhow::Context;
@@ -54,6 +55,8 @@ struct Sandbox {
     #[serde(skip)]
     cgroup_path: PathBuf,
     #[serde(skip)]
+    state_dir: Option<PathBuf>,
+    #[serde(skip)]
     keeper_pid: Option<i32>,
     #[serde(skip)]
     keeper_start_time: Option<u64>,
@@ -61,6 +64,8 @@ struct Sandbox {
     task_token: Option<String>,
     #[serde(skip)]
     task_env: Vec<String>,
+    #[serde(skip)]
+    task_filesystem_policy: Vec<FsRule>,
     #[serde(skip)]
     exec_lock: Arc<Mutex<()>>,
 }
@@ -109,12 +114,18 @@ struct TaskCreateRequest {
     env: Vec<String>,
     #[serde(default)]
     hostname: Option<String>,
+    #[serde(default)]
+    environment: EnvironmentRequest,
+    #[serde(default)]
+    volumes: Vec<EnvironmentVolume>,
 }
 
 pub async fn serve(listen: SocketAddr) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(listen).await?;
     task::cleanup_orphaned_task_cgroups()
         .context("failed to clean task state left by an interrupted daemon")?;
+    environment::cleanup_orphaned_state_dirs()
+        .context("failed to clean environment state left by an interrupted daemon")?;
     let state = AppState {
         sandboxes: Arc::new(Mutex::new(HashMap::new())),
         next_id: Arc::new(AtomicU64::new(1)),
@@ -218,10 +229,12 @@ async fn create(
         descriptor: descriptor.clone(),
         network_policy: network_policy.clone(),
         cgroup_path,
+        state_dir: None,
         keeper_pid: None,
         keeper_start_time: None,
         task_token: None,
         task_env: Vec::new(),
+        task_filesystem_policy: Vec::new(),
         exec_lock: Arc::new(Mutex::new(())),
     };
     state.sandboxes.lock().unwrap().insert(id.clone(), entry);
@@ -238,6 +251,7 @@ async fn create(
             command: req.command,
             hostname: req.hostname,
             rootfs: Some(PathBuf::from(req.rootfs)),
+            rootfs_work_dir: None,
             root_readonly: req.root_readonly.unwrap_or(false),
             env: req.env,
             proxy: req.proxy,
@@ -364,8 +378,32 @@ async fn create_task(
     };
     let cgroup_name = format!("tinybox-{id}");
     let cgroup_path = PathBuf::from("/sys/fs/cgroup").join(&cgroup_name);
+    let prepared =
+        match environment::prepare(&id, &req.environment, &workspace, &req.volumes, &req.env) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error":format!("invalid environment: {error:#}")})),
+                )
+            }
+        };
     let policy_hash = loaded.hash.clone();
     let descriptor = loaded.descriptor.clone();
+    let mut task_filesystem_policy = descriptor.filesystem.clone();
+    for (path, access) in &prepared.filesystem_paths {
+        if let Some(rule) = task_filesystem_policy
+            .iter_mut()
+            .find(|rule| rule.path == *path)
+        {
+            rule.access = *access;
+        } else {
+            task_filesystem_policy.push(FsRule {
+                path: path.clone(),
+                access: *access,
+            });
+        }
+    }
     let network_policy = Arc::new(std::sync::RwLock::new(descriptor.network.clone()));
     let audit = AuditSink::new(id.clone(), Some(policy_hash.clone()));
     audit.record(
@@ -390,10 +428,12 @@ async fn create_task(
         descriptor: Some(descriptor.clone()),
         network_policy: Some(network_policy.clone()),
         cgroup_path: cgroup_path.clone(),
+        state_dir: Some(prepared.state_dir.clone()),
         keeper_pid: None,
         keeper_start_time: None,
         task_token: Some(token.clone()),
-        task_env: req.env.clone(),
+        task_env: prepared.env.clone(),
+        task_filesystem_policy: task_filesystem_policy.clone(),
         exec_lock: Arc::new(Mutex::new(())),
     };
     state.sandboxes.lock().unwrap().insert(id.clone(), entry);
@@ -406,18 +446,19 @@ async fn create_task(
             cgroup_name: Some(cgroup_name),
             command: vec!["/bin/sleep".into(), "2147483647".into()],
             hostname: req.hostname,
-            rootfs: Some(PathBuf::from("/")),
+            rootfs: Some(prepared.rootfs),
+            rootfs_work_dir: Some(prepared.rootfs_work_dir),
             root_readonly: false,
-            env: req.env,
+            env: prepared.env,
             proxy: None,
-            volumes: vec![format!("{}:/workspace", workspace.display())],
+            volumes: prepared.volumes,
             memory: Some(resources.memory_bytes),
             cpus: Some(resources.cpus),
             cpu_quota: None,
             cpu_period: None,
             pids_limit: Some(resources.pids),
             dangerous: false,
-            filesystem_policy: Some(descriptor.filesystem.clone()),
+            filesystem_policy: Some(task_filesystem_policy),
             network_policy: Some(network_policy),
             audit: Some(audit),
             namespaces: None,
@@ -518,11 +559,7 @@ async fn exec_task(
     let Some(keeper_start_time) = task.keeper_start_time else {
         return StatusCode::CONFLICT.into_response();
     };
-    let filesystem_policy = task
-        .descriptor
-        .as_ref()
-        .map(|policy| policy.filesystem.clone())
-        .unwrap_or_default();
+    let filesystem_policy = task.task_filesystem_policy.clone();
     let target = ExecTarget {
         keeper_pid,
         keeper_start_time,
@@ -584,7 +621,7 @@ async fn remove_task(
     let Some(token) = task_token(&headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    let (supervisor_pid, cgroup_path) = {
+    let (supervisor_pid, cgroup_path, state_dir) = {
         let mut sandboxes = state.sandboxes.lock().unwrap();
         let Some(task) = sandboxes.get_mut(&id) else {
             return StatusCode::NOT_FOUND.into_response();
@@ -601,7 +638,11 @@ async fn remove_task(
             return StatusCode::CONFLICT.into_response();
         };
         task.status = "stopping".into();
-        (supervisor_pid, task.cgroup_path.clone())
+        (
+            supervisor_pid,
+            task.cgroup_path.clone(),
+            task.state_dir.clone(),
+        )
     };
 
     let result =
@@ -622,6 +663,19 @@ async fn remove_task(
             Json(serde_json::json!({"error":format!("task cleanup failed: {error}")})),
         )
             .into_response();
+    }
+    if let Some(state_dir) = state_dir {
+        if let Err(error) = environment::remove_state_dir(&state_dir) {
+            if let Some(task) = sandboxes.get_mut(&id) {
+                task.status = "cleanup_failed".into();
+                task.error = Some(format!("environment cleanup failed: {error:#}"));
+            }
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error":format!("environment cleanup failed: {error:#}")})),
+            )
+                .into_response();
+        }
     }
     sandboxes.remove(&id);
     StatusCode::NO_CONTENT.into_response()
@@ -652,7 +706,7 @@ fn generate_task_token() -> anyhow::Result<String> {
 }
 
 fn validate_task_env(values: &[String]) -> anyhow::Result<()> {
-    const ALLOWED: &[&str] = &["PATH", "LANG", "LC_ALL", "TERM", "HOME"];
+    const ALLOWED: &[&str] = &["PATH", "LANG", "LC_ALL", "TERM"];
     for value in values {
         let Some((name, _)) = value.split_once('=') else {
             anyhow::bail!("task env entries must use NAME=VALUE");
