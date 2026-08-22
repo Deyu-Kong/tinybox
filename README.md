@@ -5,8 +5,8 @@ OpenCode, Pi Agent, Codex, and other CLI coding agents. tinybox combines a
 focused subset of Docker-style Linux isolation with E2B-style persistent
 sandbox sessions, repeated exec, and environment lifecycle APIs.
 
-![Phase Progress](https://img.shields.io/badge/phases-1--13-audited-yellow)
-![Lines of Code](https://img.shields.io/badge/Rust_LOC-2306-orange)
+[![Phase Progress](https://img.shields.io/badge/runtime_phases-1--13_audited-yellow)](docs/PLAN.md)
+![Lines of Code](https://img.shields.io/badge/Rust_source_LOC-6%2C356-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Status](https://img.shields.io/badge/status-experimental%20local%20Agent%20MVP-orange)
 
@@ -44,6 +44,7 @@ environment, and lifecycle setup. tinybox targets the gap between them:
 - no project-specific Dockerfile in the intended host-environment mode;
 - one persistent task per Agent session, with repeated isolated tool exec;
 - host/rootfs/profile environment modes without a full image platform;
+- selective read-only reuse of host Rust/Node toolchains with task-private caches;
 - task-private rootfs, home, caches, and volumes;
 - a deliberately small API rather than a general container platform.
 
@@ -95,6 +96,34 @@ The MVP is trying to demonstrate a narrower user benefit:
   is cleaned after each exec;
 - Git manages source history while tinybox manages the local execution environment;
 - OpenCode can adopt the task backend without changing its reasoning loop.
+
+### Selective host environment reuse
+
+The local `profile` mode is a trusted environment manifest, not an image or a
+resource quota. A profile discovers a supported toolchain already installed on
+the developer machine, exposes only the required installation paths as
+read/execute mappings, and redirects writable package-manager caches into the
+task-private home. The workspace remains a direct read/write mapping so source
+changes survive task destruction.
+
+The current built-in profiles are deliberately small:
+
+| Profile | Host capability reused | Task-private writable state |
+|---|---|---|
+| `host-basic` | base host commands under the task policy | home and generic cache |
+| `rust` | discovered rustup/Rust toolchain, read/execute only | `CARGO_HOME` |
+| `node` | discovered Node/NVM installation and TLS certificates, read/execute only | npm cache |
+| `python` | Python available from the host-based rootfs | pip cache |
+
+Docker can assemble the same low-level behavior with bind mounts, read-only
+mounts, volumes, and environment variables. tinybox's narrower contribution is
+the Agent-oriented default: tool discovery, mapping modes, private cache paths,
+Landlock rules, and task/exec lifecycle are produced together without requiring
+a project Dockerfile. E2B instead prepares remote sandboxes from templates; it
+does not directly reuse arbitrary toolchains installed on a user's local Linux
+machine. Profiles are currently hand-written and host-dependent, so they are
+not a reproducible package format or an automatically discovered dependency
+closure.
 
 For detailed notes and the design lessons taken from these systems, see
 [docs/COMPETITIVE_LANDSCAPE.md](docs/COMPETITIVE_LANDSCAPE.md).
