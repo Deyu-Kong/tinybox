@@ -95,8 +95,10 @@ fn validate_name(name: &str) -> Result<()> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Mutex;
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
+    static IMAGE_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn fresh_store() -> PathBuf {
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -131,6 +133,7 @@ mod tests {
 
     #[test]
     fn import_and_list_roundtrip() {
+        let _guard = IMAGE_ENV_LOCK.lock().unwrap();
         let _dir = fresh_store();
         let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
         let alias = format!("alpine-{unique}");
@@ -149,6 +152,7 @@ mod tests {
 
     #[test]
     fn remove_deletes_image() {
+        let _guard = IMAGE_ENV_LOCK.lock().unwrap();
         let _dir = fresh_store();
         let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
         let alias = format!("alpine-rm-{unique}");

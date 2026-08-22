@@ -229,7 +229,7 @@ exec 失败明确报错且绝不回退宿主。stop 回收 PID/mount/cgroup 但�
 state，destroy 再删除 state 与 record。task ID 包含 daemon PID 与序号，避免多个
 本地 daemon 共享 cgroup/session 名。root 验收见 `tests/agent_cli.rs`。
 
-### M3：Agent integrations
+### M3：Agent integrations ✅ 2026-08-22
 
 OpenCode：
 
@@ -250,6 +250,15 @@ Pi Agent：
 
 完成门：每个 Agent 标记为 `supported`、`experimental` 或 `unsupported`，并附可复现
 命令；至少 OpenCode 的确定性 adapter contract tests 全绿。
+
+完成记录：OpenCode 1.18.18 的 project-local `bash` override 已由官方 custom tool
+机制加载，adapter contract 覆盖 task ID fail-closed、workspace cwd、timeout 与 argv；
+真实命令后端由 root Agent CLI 验收覆盖。Codex CLI 0.148.0 仅通过 whole-agent
+`--version` sandbox smoke，TTY/config/auth/resume/nested sandbox 未通过，故只标
+experimental smoke；Pi 按官方 `registerTool` 完成 source spike，但因环境未安装 Pi
+而标 unsupported。支持矩阵与命令见 `AGENT_INTEGRATIONS.md`，组合验收见
+`scripts/test_m3.sh`。task exec 同时修复为按 task PATH 解析首个 executable，避免
+profile 只对子进程生效的假支持。
 
 ### M4：Demo 与度量
 

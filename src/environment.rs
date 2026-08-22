@@ -2,6 +2,7 @@ use crate::policy::FsAccess;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -69,6 +70,23 @@ pub fn prepare(
 
     let result = (|| -> Result<PreparedEnvironment> {
         let (source, rootfs, profile_env, tool_paths) = resolve_source(request)?;
+        if matches!(request, EnvironmentRequest::Profile { name } if name == "codex") {
+            let script = fs::canonicalize(tool_paths[0].join("codex"))?;
+            if script.to_string_lossy().contains('\'') {
+                bail!("Codex tool path contains an unsupported quote character");
+            }
+            let wrapper_dir = state_dir.join("home/bin");
+            fs::create_dir_all(&wrapper_dir)?;
+            let wrapper = wrapper_dir.join("codex");
+            fs::write(
+                &wrapper,
+                format!(
+                    "#!/bin/sh\nexec /usr/bin/node '{}' \"$@\"\n",
+                    script.display()
+                ),
+            )?;
+            fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700))?;
+        }
         let mut mappings = vec![
             Mapping {
                 source: workspace.to_path_buf(),
@@ -203,6 +221,13 @@ fn resolve_source(
                     vec!["PIP_CACHE_DIR=/home/agent/.cache/pip".into()],
                     Vec::new(),
                 ),
+                "codex" => {
+                    let (bin, install) = discover_script_tool("codex", 5)?;
+                    (
+                        vec!["PATH=/home/agent/bin:/usr/bin:/bin".into()],
+                        vec![bin, install, PathBuf::from("/etc/ssl")],
+                    )
+                }
                 _ => bail!("unknown environment profile: {name}"),
             };
             Ok((format!("profile:{name}"), PathBuf::from("/"), env, paths))
@@ -211,22 +236,39 @@ fn resolve_source(
 }
 
 fn discover_tool(name: &str, install_parents: usize) -> Result<(PathBuf, PathBuf)> {
-    let output = std::process::Command::new("sh")
-        .args(["-c", "command -v -- \"$1\"", "tinybox-profile", name])
-        .output()?;
-    let command_path = if output.status.success() {
-        PathBuf::from(String::from_utf8(output.stdout)?.trim())
-    } else {
-        discover_login_tool(name).context(format!("profile requires host tool: {name}"))?
-    };
+    let command_path = find_tool(name)?;
     let resolved = fs::canonicalize(&command_path)?;
-    // Use the resolved binary directory rather than a rustup/nvm shim path.
-    // This avoids importing user configuration or credentials merely to pick
-    // a toolchain version.
+    // Use the resolved binary directory rather than a rustup shim path.
     let bin = resolved
         .parent()
         .context("tool has no bin directory")?
         .to_path_buf();
+    Ok((bin, install_root(&resolved, install_parents)?))
+}
+
+fn discover_script_tool(name: &str, install_parents: usize) -> Result<(PathBuf, PathBuf)> {
+    let command_path = find_tool(name)?;
+    let bin = command_path
+        .parent()
+        .context("tool has no bin directory")?
+        .to_path_buf();
+    let resolved = fs::canonicalize(command_path)?;
+    Ok((bin, install_root(&resolved, install_parents)?))
+}
+
+fn find_tool(name: &str) -> Result<PathBuf> {
+    let output = std::process::Command::new("sh")
+        .args(["-c", "command -v -- \"$1\"", "tinybox-profile", name])
+        .output()?;
+    let path = if output.status.success() {
+        PathBuf::from(String::from_utf8(output.stdout)?.trim())
+    } else {
+        discover_login_tool(name).context(format!("profile requires host tool: {name}"))?
+    };
+    Ok(path)
+}
+
+fn install_root(resolved: &Path, install_parents: usize) -> Result<PathBuf> {
     let mut install = resolved
         .parent()
         .context("tool has no install directory")?
@@ -237,7 +279,7 @@ fn discover_tool(name: &str, install_parents: usize) -> Result<(PathBuf, PathBuf
             .context("tool install path is too shallow")?
             .to_path_buf();
     }
-    Ok((bin, install))
+    Ok(install)
 }
 
 fn discover_login_tool(name: &str) -> Option<PathBuf> {
@@ -258,6 +300,16 @@ fn discover_login_tool(name: &str) -> Option<PathBuf> {
         return candidates.into_iter().next();
     }
     if matches!(name, "node" | "npm") {
+        let versions = home.join(".nvm/versions/node");
+        let mut candidates = fs::read_dir(versions)
+            .ok()?
+            .filter_map(|entry| entry.ok().map(|entry| entry.path().join("bin").join(name)))
+            .filter(|path| path.exists())
+            .collect::<Vec<_>>();
+        candidates.sort();
+        return candidates.pop();
+    }
+    if matches!(name, "codex" | "opencode") {
         let versions = home.join(".nvm/versions/node");
         let mut candidates = fs::read_dir(versions)
             .ok()?

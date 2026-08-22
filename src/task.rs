@@ -295,13 +295,14 @@ fn enter_and_exec(
             landlock::enforce(&target.filesystem_policy)?;
             drop_capabilities(false)?;
             apply_seccomp_filter(false)?;
-            let program = CString::new(request.command[0].as_str())?;
             let args = request
                 .command
                 .iter()
                 .map(|value| CString::new(value.as_str()))
                 .collect::<std::result::Result<Vec<_>, _>>()?;
             let env = merge_environment(&target.base_env, &request.env)?;
+            let program_path = resolve_program(&request.command[0], &env)?;
+            let program = CString::new(program_path)?;
             let env = env
                 .iter()
                 .map(|value| CString::new(value.as_str()))
@@ -352,6 +353,24 @@ fn validate_env(value: &str) -> Result<()> {
         bail!("invalid environment variable name: {name}");
     }
     Ok(())
+}
+
+fn resolve_program(command: &str, env: &[String]) -> Result<String> {
+    if command.contains('/') {
+        return Ok(command.to_string());
+    }
+    let path = env
+        .iter()
+        .rev()
+        .find_map(|value| value.strip_prefix("PATH="))
+        .unwrap_or("/usr/bin:/bin");
+    for directory in path.split(':').filter(|value| !value.is_empty()) {
+        let candidate = Path::new(directory).join(command);
+        if candidate.is_file() {
+            return Ok(candidate.to_string_lossy().into_owned());
+        }
+    }
+    bail!("command not found in task PATH: {command}")
 }
 
 fn collect_helper(
@@ -524,5 +543,17 @@ mod tests {
         assert!(merged.contains(&"PATH=/bin".to_string()));
         assert!(merged.contains(&"LANG=en_US.UTF-8".to_string()));
         assert!(!merged.contains(&"LANG=C".to_string()));
+    }
+
+    #[test]
+    fn resolves_program_from_task_environment() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("tool"), "fixture").unwrap();
+        let env = vec![format!("PATH={}", directory.path().display())];
+        assert_eq!(
+            resolve_program("tool", &env).unwrap(),
+            directory.path().join("tool").to_string_lossy()
+        );
+        assert!(resolve_program("missing", &env).is_err());
     }
 }

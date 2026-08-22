@@ -130,6 +130,8 @@ enum AgentAction {
     },
     Exec {
         id: String,
+        #[arg(long, default_value = "/workspace")]
+        cwd: String,
         #[arg(long, default_value_t = 120_000)]
         timeout_ms: u64,
         #[arg(last = true)]
@@ -191,10 +193,11 @@ fn main() -> Result<()> {
             }
             AgentAction::Exec {
                 id,
+                cwd,
                 timeout_ms,
                 command,
             } => {
-                std::process::exit(agent_client::exec(&id, command, timeout_ms)?);
+                std::process::exit(agent_client::exec(&id, command, cwd, timeout_ms)?);
             }
             AgentAction::List => agent_client::list()?,
             AgentAction::Stop { id } => agent_client::stop(&id)?,

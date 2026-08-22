@@ -71,7 +71,7 @@ pub fn run(options: RunOptions) -> Result<i32> {
         println!("{}", session.id);
         return Ok(0);
     }
-    let result = exec_session(&client, &session, options.command, 3_600_000);
+    let result = exec_session(&client, &session, options.command, "/workspace", 3_600_000);
     let destroy_result = destroy_session(&client, &session);
     remove_session(&session.id)?;
     let response = result?;
@@ -80,12 +80,12 @@ pub fn run(options: RunOptions) -> Result<i32> {
     Ok(response["exit_code"].as_i64().unwrap_or(125) as i32)
 }
 
-pub fn exec(id: &str, command: Vec<String>, timeout_ms: u64) -> Result<i32> {
+pub fn exec(id: &str, command: Vec<String>, cwd: String, timeout_ms: u64) -> Result<i32> {
     if command.is_empty() {
         bail!("agent exec requires a command after --");
     }
     let session = load_session(id)?;
-    let response = exec_session(&client()?, &session, command, timeout_ms)?;
+    let response = exec_session(&client()?, &session, command, &cwd, timeout_ms)?;
     print_exec_output(&response)?;
     Ok(response["exit_code"].as_i64().unwrap_or(125) as i32)
 }
@@ -126,6 +126,7 @@ fn exec_session(
     client: &Client,
     session: &Session,
     command: Vec<String>,
+    cwd: &str,
     timeout_ms: u64,
 ) -> Result<Value> {
     let response = checked(
@@ -135,7 +136,7 @@ fn exec_session(
                 &format!("/api/tasks/{}/exec", session.id),
             ))
             .header("X-Tinybox-Task-Token", &session.token)
-            .json(&json!({"command":command,"cwd":"/workspace","timeout_ms":timeout_ms}))
+            .json(&json!({"command":command,"cwd":cwd,"timeout_ms":timeout_ms}))
             .send(),
     )?;
     response.json().context("invalid task exec response")

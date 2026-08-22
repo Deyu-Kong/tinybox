@@ -69,6 +69,25 @@ fn agent_cli_foreground_and_detached_lifecycle() {
     );
     assert_eq!(foreground.stdout, b"agent-ok");
 
+    let codex = tinybox(&[
+        "agent",
+        "run",
+        workspace,
+        "--profile",
+        "codex",
+        "--daemon",
+        ADDRESS,
+        "--",
+        "codex",
+        "--version",
+    ]);
+    assert!(
+        codex.status.success(),
+        "{}",
+        String::from_utf8_lossy(&codex.stderr)
+    );
+    assert!(String::from_utf8_lossy(&codex.stdout).contains("codex-cli"));
+
     let detached = tinybox(&["agent", "run", workspace, "--daemon", ADDRESS, "--detach"]);
     assert!(
         detached.status.success(),
@@ -118,6 +137,18 @@ fn agent_cli_foreground_and_detached_lifecycle() {
     ]);
     assert!(second.status.success());
     assert_eq!(second.stdout, b"persisted");
+    std::fs::create_dir(fixture.path().join("subdir")).unwrap();
+    let cwd = tinybox(&[
+        "agent",
+        "exec",
+        &id,
+        "--cwd",
+        "/workspace/subdir",
+        "--",
+        "/bin/pwd",
+    ]);
+    assert!(cwd.status.success());
+    assert_eq!(cwd.stdout, b"/workspace/subdir\n");
 
     let stopped = tinybox(&["agent", "stop", &id]);
     assert!(
