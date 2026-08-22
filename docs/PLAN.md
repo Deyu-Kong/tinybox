@@ -18,6 +18,12 @@
 > 仍只是 MVP 后的独立可选评估，不参与
 > 项目定义或 MVP 完成门。新的完成门见 PRODUCT_PLAN G0 与 M0–M5。
 
+> **2026-08-22 Agent 接入增强。** OpenCode 与 Pi 现共用 argv-safe task-exec
+> runtime，并提供 `agent integrate` 用户级一次安装和 `agent launch` task 生命周期
+> 托管。OpenCode 已通过配置加载、真实录制与 launch 验收；Pi 0.73.0 已通过实现、
+> 安装、真实模型 Bash tool call 与 task cleanup 验收。Codex 仍仅是整 Agent 非交互 smoke，
+> 不声称替换其内置 shell。
+
 约定：
 - `file:line` 引用以提交 `b73c7b1`（phase 13）的代码树为准。
 - 严重度：**P0** = 隔离/安全被打破 · **P1** = 正确性 bug 或文档声称的功能

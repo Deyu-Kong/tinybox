@@ -251,12 +251,14 @@ Pi Agent：
 完成门：每个 Agent 标记为 `supported`、`experimental` 或 `unsupported`，并附可复现
 命令；至少 OpenCode 的确定性 adapter contract tests 全绿。
 
-完成记录：OpenCode 1.18.18 的 project-local `bash` override 已由官方 custom tool
-机制加载，adapter contract 覆盖 task ID fail-closed、workspace cwd、timeout 与 argv；
+完成记录：OpenCode 1.18.18 的用户级 `bash` override 已由官方 custom tool
+机制加载，`agent integrate` 一次安装、`agent launch` 强制加载并托管 task 生命周期；
+adapter contract 覆盖 task ID fail-closed、workspace cwd、timeout、取消与 argv；
 真实命令后端由 root Agent CLI 验收覆盖。Codex CLI 0.148.0 仅通过 whole-agent
 `--version` sandbox smoke，TTY/config/auth/resume/nested sandbox 未通过，故只标
-experimental smoke；Pi 按官方 `registerTool` 完成 source spike，但因环境未安装 Pi
-而标 unsupported。支持矩阵与命令见 `AGENT_INTEGRATIONS.md`，组合验收见
+experimental smoke；Pi 按官方 `registerTool` 实现同名 `bash` 覆盖，并与 OpenCode
+共享 Node task-exec runtime；安装与 source contract 通过，但因环境未安装 Pi，live
+smoke 仍待完成。支持矩阵与命令见 `AGENT_INTEGRATIONS.md`，组合验收见
 `scripts/test_m3.sh`。task exec 同时修复为按 task PATH 解析首个 executable，避免
 profile 只对子进程生效的假支持。
 
@@ -299,6 +301,11 @@ OverlayFS、Landlock ABI 和 root daemon 条件。`INSTALL.md` 覆盖临时 loop
 当前 WSL2 主机另通过 root doctor、M3 组合验收与 M4 demo。
 
 ### M6：可选增强评估
+
+已落地的独立增强（不改变 MVP 安全边界）：OpenCode/Pi 共用 task-exec runtime、
+用户级 `agent integrate` 与自动 create/destroy 的 `agent launch`。OpenCode live 验收
+通过；Pi 0.73.0 的真实模型 Bash tool call 与 task cleanup 也已通过。Codex 更深工具级
+接入未实现。
 
 在核心 MVP 完成后分别评估：
 

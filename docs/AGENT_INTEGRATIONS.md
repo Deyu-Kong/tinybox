@@ -7,20 +7,20 @@
 
 | Agent | Integration | Status | Evidence and boundary |
 |---|---|---|---|
-| OpenCode 1.18.18 | Host Agent + project custom `bash` tool → persistent task exec | **experimental** | Official custom-tool discovery and same-name override are used. `runtime.test.mjs` verifies cwd/argv/fail-closed; `opencode debug config` loads the installed tool. A live LLM tool call is left to the demo because it requires the user's provider credentials. |
+| OpenCode 1.18.18 | Host Agent + user-level custom `bash` override → persistent task exec | **experimental** | `agent integrate` installs once; `agent launch` forces the adapter through `OPENCODE_CONFIG_DIR`, creates one task, and destroys it on exit. Contract, config-load, and recorded live LLM tool calls pass. |
 | Codex CLI 0.148.0 | Whole Agent process in `tinybox agent run --profile node` | **experimental smoke only** | `codex --version` runs inside tinybox under root acceptance. Buffered execution has no controlling TTY; config/auth injection, interactive UI, `resume`, and nested Codex sandbox behavior are therefore **unsupported** in this MVP. tinybox does not claim to replace Codex's built-in shell sandbox. |
-| Pi coding agent | TypeScript extension registering `tinybox_bash` | **unsupported / spike** | The extension follows the official `pi.registerTool()` interface, but no Pi binary is installed in the acceptance environment, so it is not promoted to experimental support. |
+| Pi coding agent 0.73.0 | Host Agent + user-level extension overriding `bash` → persistent task exec | **experimental** | Uses the official same-name tool override and explicit `--extension` loading. Shared runtime, install contract, real Alibaba Model Studio request, tinybox Bash tool call, and task cleanup all pass. |
 | Generic CLI | Whole process or detached task + `agent exec` | **supported (experimental runtime)** | Root acceptance covers foreground exit/output/cleanup and detached repeated exec/stop/destroy. No TTY streaming or attach. |
 
 ## OpenCode
 
-OpenCode documents project tools under `.opencode/tools/`, and states that a custom
-tool with the same name as a built-in tool takes precedence. tinybox uses that mechanism
-to replace `bash` without modifying OpenCode core:
+OpenCode supports global tools under `~/.config/opencode/tools/` and gives same-name custom
+tools precedence over built-ins. tinybox installs once and launches OpenCode with that
+directory as the explicit highest-priority custom directory:
 
 ```bash
-scripts/install_opencode_adapter.sh /path/to/project
-TINYBOX_BIN="$PWD/target/debug/tinybox" scripts/tinybox-opencode /path/to/project
+tinybox agent integrate opencode
+tinybox agent launch opencode /path/to/project
 ```
 
 The wrapper creates one detached task for the OpenCode session. Every `bash` call becomes
@@ -49,8 +49,16 @@ Source: [official OpenAI Codex CLI reference](https://developers.openai.com/code
 
 ## Pi
 
-`adapters/pi/tinybox.ts` is a source-level spike using `pi.registerTool()`. It forwards
-command and timeout, returns output plus exit status, and destroys the task on cancellation.
-Install/runtime smoke is required before changing the status.
+Pi supports user-level extensions under `~/.pi/agent/extensions/` and same-name built-in
+tool replacement. tinybox installs an extension once and loads its exact path at launch:
+
+```bash
+tinybox agent integrate pi
+tinybox agent launch pi /path/to/project
+```
+
+It shares the OpenCode adapter's argv-safe task exec implementation and forwards command,
+cwd, timeout, cancellation, output, and exit status. Pi 0.73.0 completed a live model tool
+call that emitted `PI_TINYBOX_LIVE_OK` from the task, followed by successful task cleanup.
 
 Source: [Pi extensions documentation](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/extensions.md).

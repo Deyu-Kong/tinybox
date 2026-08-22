@@ -103,8 +103,9 @@ For detailed notes and the design lessons taken from these systems, see
 
 **Phases 1–13 form the experimental runtime baseline; some features remain
 partial. Persistent task/exec, environments, generic Agent CLI, and integration
-classification and the deterministic demo have passed M0–M4. OpenCode is experimental, Codex is wrapper-smoke
-only, and Pi remains unsupported after a source-level spike.** See
+classification and the deterministic demo have passed M0–M4. OpenCode is experimentally
+verified, Pi 0.73.0 is experimentally verified, and Codex is wrapper-smoke
+only.** See
 [docs/PLAN.md](docs/PLAN.md) for the authoritative, line-referenced audit and
 remediation roadmap. Per-phase status uses ✅ works / ⚠️ partial / ❌ broken.
 The completed C0–C6 capability implementation record is in
@@ -131,9 +132,18 @@ sudo ./scripts/run_capability_workloads.sh
 sudo ./scripts/benchmark_capability.sh 20
 ```
 
-The required bare-versus-protected OpenCode integration and its acceptance
-matrix are specified in [docs/OPENCODE_DEMO.md](docs/OPENCODE_DEMO.md). It is a
-design specification, not a claim that the adapter already exists.
+Install a user-level adapter once, then launch an Agent with one automatically managed task:
+
+```bash
+tinybox agent integrate opencode
+tinybox agent launch opencode .
+
+tinybox agent integrate pi
+tinybox agent launch pi .
+```
+
+The bare-versus-protected OpenCode acceptance matrix and reproducible recording procedure
+are specified in [docs/OPENCODE_DEMO.md](docs/OPENCODE_DEMO.md).
 
 Keep the selected policy outside Agent-writable paths. The host launcher enforces
 only the immutable filesystem ceiling; high-risk execution still belongs in the
@@ -251,8 +261,9 @@ Then keep the Agent/client process as your normal user:
 ```
 
 The command does not need a Dockerfile. It creates one persistent task, runs the command,
-and destroys the task after propagating output and exit status. OpenCode setup is documented
-in [the integration matrix](docs/AGENT_INTEGRATIONS.md).
+and destroys the task after propagating output and exit status. OpenCode and Pi use a
+one-time user-level adapter plus `agent launch`; setup and exact support boundaries are in
+[the integration matrix](docs/AGENT_INTEGRATIONS.md).
 
 ### Prepare a rootfs (one-time)
 
