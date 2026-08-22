@@ -139,6 +139,7 @@ pub async fn serve(listen: SocketAddr) -> anyhow::Result<()> {
         .route("/api/tasks", post(create_task))
         .route("/api/tasks/:id", get(get_one).delete(remove_task))
         .route("/api/tasks/:id/exec", post(exec_task))
+        .route("/api/tasks/:id/stop", post(stop_task))
         .route("/metrics", get(metrics))
         .with_state(state);
     axum::serve(listener, app).await?;
@@ -364,7 +365,6 @@ async fn create_task(
         );
     }
 
-    let id = format!("task-{}", state.next_id.fetch_add(1, Ordering::Relaxed));
     let token = match generate_task_token() {
         Ok(token) => token,
         Err(error) => {
@@ -376,6 +376,11 @@ async fn create_task(
             )
         }
     };
+    let id = format!(
+        "task-{}-{}",
+        std::process::id(),
+        state.next_id.fetch_add(1, Ordering::Relaxed)
+    );
     let cgroup_name = format!("tinybox-{id}");
     let cgroup_path = PathBuf::from("/sys/fs/cgroup").join(&cgroup_name);
     let prepared =
@@ -493,6 +498,9 @@ async fn create_task(
             },
         );
         if let Some(task) = state_clone.sandboxes.lock().unwrap().get_mut(&id_clone) {
+            if matches!(task.status.as_str(), "stopping" | "stopped") {
+                return;
+            }
             match result {
                 Ok(code) => {
                     task.status = "completed".into();
@@ -621,7 +629,7 @@ async fn remove_task(
     let Some(token) = task_token(&headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    let (supervisor_pid, cgroup_path, state_dir) = {
+    let (supervisor_pid, cgroup_path, state_dir, needs_stop) = {
         let mut sandboxes = state.sandboxes.lock().unwrap();
         let Some(task) = sandboxes.get_mut(&id) else {
             return StatusCode::NOT_FOUND.into_response();
@@ -634,19 +642,22 @@ async fn remove_task(
         {
             return StatusCode::UNAUTHORIZED.into_response();
         }
-        let Some(supervisor_pid) = task.pid else {
-            return StatusCode::CONFLICT.into_response();
-        };
+        let supervisor_pid = task.pid.unwrap_or_default();
+        let needs_stop = task.cgroup_path.exists();
         task.status = "stopping".into();
         (
             supervisor_pid,
             task.cgroup_path.clone(),
             task.state_dir.clone(),
+            needs_stop,
         )
     };
 
-    let result =
-        tokio::task::spawn_blocking(move || task::destroy_task(supervisor_pid, &cgroup_path)).await;
+    let result = if needs_stop {
+        tokio::task::spawn_blocking(move || task::destroy_task(supervisor_pid, &cgroup_path)).await
+    } else {
+        Ok(Ok(()))
+    };
     let mut sandboxes = state.sandboxes.lock().unwrap();
     let cleanup_error = match result {
         Ok(Ok(())) => None,
@@ -679,6 +690,65 @@ async fn remove_task(
     }
     sandboxes.remove(&id);
     StatusCode::NO_CONTENT.into_response()
+}
+
+async fn stop_task(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let Some(token) = task_token(&headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let (supervisor_pid, cgroup_path) = {
+        let mut sandboxes = state.sandboxes.lock().unwrap();
+        let Some(task) = sandboxes.get_mut(&id) else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        if task.kind != "task"
+            || !task
+                .task_token
+                .as_deref()
+                .is_some_and(|expected| constant_time_eq(expected, token))
+        {
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+        if task.status == "stopped" {
+            return StatusCode::NO_CONTENT.into_response();
+        }
+        if task.status != "running" {
+            return StatusCode::CONFLICT.into_response();
+        }
+        let Some(pid) = task.pid else {
+            return StatusCode::CONFLICT.into_response();
+        };
+        task.status = "stopping".into();
+        (pid, task.cgroup_path.clone())
+    };
+    let cleanup =
+        tokio::task::spawn_blocking(move || task::destroy_task(supervisor_pid, &cgroup_path)).await;
+    let mut sandboxes = state.sandboxes.lock().unwrap();
+    match cleanup {
+        Ok(Ok(())) => {
+            if let Some(task) = sandboxes.get_mut(&id) {
+                task.status = "stopped".into();
+                task.pid = None;
+                task.keeper_pid = None;
+                task.keeper_start_time = None;
+            }
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Ok(Err(error)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error":format!("task stop failed: {error:#}")})),
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error":format!("task stop worker failed: {error}")})),
+        )
+            .into_response(),
+    }
 }
 
 fn task_token(headers: &HeaderMap) -> Option<&str> {

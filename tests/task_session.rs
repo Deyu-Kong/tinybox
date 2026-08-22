@@ -260,9 +260,15 @@ fn persistent_task_exec_is_stateful_and_policy_enforced() {
 
     let mut invalid_profile = create.clone();
     invalid_profile["environment"] = json!({"source":"profile","name":"missing"});
+    let state_entries_before = std::fs::read_dir("/var/lib/tinybox/tasks")
+        .map(|entries| entries.count())
+        .unwrap_or(0);
     let (status, _) = request("POST", "/api/tasks", None, Some(&invalid_profile));
     assert_eq!(status, 400);
-    assert!(!std::path::Path::new("/var/lib/tinybox/tasks/task-1").exists());
+    let state_entries_after = std::fs::read_dir("/var/lib/tinybox/tasks")
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    assert_eq!(state_entries_after, state_entries_before);
 
     std::fs::write(
         workspace.join("smoke.rs"),

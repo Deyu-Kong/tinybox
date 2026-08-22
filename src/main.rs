@@ -1,3 +1,4 @@
+mod agent_client;
 mod audit;
 mod broker;
 mod cgroup;
@@ -42,6 +43,10 @@ enum Commands {
     Image {
         #[command(subcommand)]
         action: ImageAction,
+    },
+    Agent {
+        #[command(subcommand)]
+        action: AgentAction,
     },
     Run {
         #[arg(long)]
@@ -108,6 +113,38 @@ enum Commands {
 }
 
 #[derive(Subcommand)]
+enum AgentAction {
+    Run {
+        #[arg(default_value = ".")]
+        workspace: std::path::PathBuf,
+        #[arg(long)]
+        profile: Option<String>,
+        #[arg(long)]
+        root: Option<std::path::PathBuf>,
+        #[arg(long)]
+        detach: bool,
+        #[arg(long, default_value = "127.0.0.1:8080")]
+        daemon: String,
+        #[arg(last = true)]
+        command: Vec<String>,
+    },
+    Exec {
+        id: String,
+        #[arg(long, default_value_t = 120_000)]
+        timeout_ms: u64,
+        #[arg(last = true)]
+        command: Vec<String>,
+    },
+    List,
+    Stop {
+        id: String,
+    },
+    Destroy {
+        id: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum ImageAction {
     Import {
         tar: String,
@@ -133,6 +170,36 @@ fn main() -> Result<()> {
             let address = daemon::parse_listen(&listen)?;
             tokio::runtime::Runtime::new()?.block_on(daemon::serve(address))?;
         }
+        Commands::Agent { action } => match action {
+            AgentAction::Run {
+                workspace,
+                profile,
+                root,
+                detach,
+                daemon,
+                command,
+            } => {
+                let code = agent_client::run(agent_client::RunOptions {
+                    daemon,
+                    workspace,
+                    profile,
+                    rootfs: root,
+                    detach,
+                    command,
+                })?;
+                std::process::exit(code);
+            }
+            AgentAction::Exec {
+                id,
+                timeout_ms,
+                command,
+            } => {
+                std::process::exit(agent_client::exec(&id, command, timeout_ms)?);
+            }
+            AgentAction::List => agent_client::list()?,
+            AgentAction::Stop { id } => agent_client::stop(&id)?,
+            AgentAction::Destroy { id } => agent_client::destroy(&id)?,
+        },
         Commands::Image { action } => match action {
             ImageAction::Import { tar, alias } => {
                 let dest = image::import_tar(std::path::Path::new(&tar), &alias)?;

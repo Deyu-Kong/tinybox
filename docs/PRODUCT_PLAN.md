@@ -202,7 +202,7 @@ rustup/nvm 工具链只获得 read+execute；未知 profile 与非法 volume fai
 seccomp 通过前置 filter 将不可安全参数过滤的 `clone3`/`io_uring_*` 返回 ENOSYS，
 使其回退到受参数过滤的 `clone`/epoll，而不是直接放行这些 syscall。
 
-### M2：Agent CLI 与生命周期
+### M2：Agent CLI 与生命周期 ✅ 2026-08-22
 
 实现用户入口：
 
@@ -220,6 +220,14 @@ tinybox agent destroy
 - 错误不得静默回退到宿主裸执行。
 
 完成门：一条命令启动通用 CLI workload，一条命令销毁且无残留。
+
+完成记录：`tinybox agent run/list/stop/destroy` 已落地，并额外提供 adapter 可用的
+`agent exec`。foreground 同步返回 stdout/stderr/exit code并自动 destroy；detach
+只创建长期 task，不在后台偷偷启动命令；MVP 不支持 attach/TTY streaming。token
+仅保存在宿主 `/run/tinybox/agents` 的 0600 record，sandbox 看不到；daemon 连接或
+exec 失败明确报错且绝不回退宿主。stop 回收 PID/mount/cgroup 但保留 environment
+state，destroy 再删除 state 与 record。task ID 包含 daemon PID 与序号，避免多个
+本地 daemon 共享 cgroup/session 名。root 验收见 `tests/agent_cli.rs`。
 
 ### M3：Agent integrations
 

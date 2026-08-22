@@ -13,8 +13,8 @@
 
 > **2026-08-22 产品变更。** 当前目标改为本地、单用户的轻量 Agent 容器系统：
 > persistent task + environment model + repeated clean exec + Agent adapters。
-> task/exec 与 environment model 已在 2026-08-22 完成 M0/M1 root 验收；Agent
-> CLI 与 adapter 尚未实现，因此仍不能称为完整 Agent container MVP。save/restore/reset 仅是 MVP 后的独立可选评估，不参与
+> task/exec、environment model 与 Agent CLI 已在 2026-08-22 完成 M0–M2 root
+> 验收；Agent adapters 尚未实现，因此仍不能称为完整 Agent container MVP。save/restore/reset 仅是 MVP 后的独立可选评估，不参与
 > 项目定义或 MVP 完成门。新的完成门见 PRODUCT_PLAN G0 与 M0–M5。
 
 约定：
