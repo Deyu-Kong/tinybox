@@ -1,5 +1,5 @@
 import { tool } from "@opencode-ai/plugin"
-import { execArguments, sandboxCwd } from "./runtime.js"
+import { runTinyboxExec, sandboxCwd } from "./runtime.js"
 
 export default tool({
   description: "Run a shell command in the persistent tinybox task",
@@ -15,26 +15,12 @@ export default tool({
     const tinybox = process.env.TINYBOX_BIN || "tinybox"
     const cwd = sandboxCwd(context.worktree, args.workdir || context.worktree)
     const timeout = args.timeout || 120000
-    const proc = Bun.spawn(
-      execArguments(tinybox, task, cwd, timeout, args.command),
-      { stdout: "pipe", stderr: "pipe", env: process.env },
-    )
-    const abort = () => {
-      proc.kill()
-      Bun.spawnSync([tinybox, "agent", "destroy", task], { stdout: "ignore", stderr: "ignore", env: process.env })
+    const result = await runTinyboxExec({
+      tinybox, task, cwd, timeout, command: args.command, signal: context.abort,
+    })
+    if (result.exitCode !== 0) {
+      throw new Error(`tinybox command exited ${result.exitCode}\n${result.output}`)
     }
-    context.abort.addEventListener("abort", abort, { once: true })
-    try {
-      const [stdout, stderr, exitCode] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-        proc.exited,
-      ])
-      const output = `${stdout}${stderr}`
-      if (exitCode !== 0) throw new Error(`tinybox command exited ${exitCode}\n${output}`)
-      return output
-    } finally {
-      context.abort.removeEventListener("abort", abort)
-    }
+    return result.output
   },
 })

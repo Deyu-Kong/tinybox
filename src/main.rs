@@ -1,4 +1,5 @@
 mod agent_client;
+mod agent_integration;
 mod audit;
 mod broker;
 mod cgroup;
@@ -119,6 +120,30 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum AgentAction {
+    /// Install a user-level Agent tool adapter (project-local only with --project).
+    Integrate {
+        #[arg(value_parser = ["opencode", "pi"])]
+        agent: String,
+        #[arg(long)]
+        project: Option<std::path::PathBuf>,
+        #[arg(long)]
+        force: bool,
+    },
+    /// Run a host Agent whose shell tool uses one persistent tinybox task.
+    Launch {
+        #[arg(value_parser = ["opencode", "pi"])]
+        agent: String,
+        #[arg(default_value = ".")]
+        workspace: std::path::PathBuf,
+        #[arg(long)]
+        profile: Option<String>,
+        #[arg(long)]
+        root: Option<std::path::PathBuf>,
+        #[arg(long, default_value = "127.0.0.1:8080")]
+        daemon: String,
+        #[arg(last = true)]
+        arguments: Vec<String>,
+    },
     Run {
         #[arg(default_value = ".")]
         workspace: std::path::PathBuf,
@@ -179,6 +204,32 @@ fn main() -> Result<()> {
             tokio::runtime::Runtime::new()?.block_on(daemon::serve(address))?;
         }
         Commands::Agent { action } => match action {
+            AgentAction::Integrate {
+                agent,
+                project,
+                force,
+            } => {
+                let path = agent_integration::install(&agent, project.as_deref(), force)?;
+                println!("installed {agent} adapter: {}", path.display());
+            }
+            AgentAction::Launch {
+                agent,
+                workspace,
+                profile,
+                root,
+                daemon,
+                arguments,
+            } => {
+                let code = agent_integration::launch(agent_integration::LaunchOptions {
+                    agent,
+                    workspace,
+                    profile,
+                    rootfs: root,
+                    daemon,
+                    arguments,
+                })?;
+                std::process::exit(code);
+            }
             AgentAction::Run {
                 workspace,
                 profile,

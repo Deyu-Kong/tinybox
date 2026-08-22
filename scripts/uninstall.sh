@@ -9,8 +9,8 @@ for path in \
     "$prefix/bin/tinybox-opencode" \
     "$prefix/bin/tinybox-install-opencode-adapter" \
     "$prefix/share/tinybox/adapters/opencode/bash.ts" \
-    "$prefix/share/tinybox/adapters/opencode/runtime.js" \
-    "$prefix/share/tinybox/adapters/pi/tinybox.ts"
+    "$prefix/share/tinybox/adapters/pi/tinybox.ts" \
+    "$prefix/share/tinybox/adapters/shared/runtime.js"
 do
     [ ! -e "$path" ] || unlink "$path"
 done

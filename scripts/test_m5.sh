@@ -16,10 +16,16 @@ assert checks and not any(item["status"] == "fail" for item in checks)
 '
 
 mkdir -p "$fixture/project"
-TINYBOX_INSTALL_PREFIX="$fixture/prefix" \
-    "$fixture/prefix/bin/tinybox-install-opencode-adapter" "$fixture/project" >/dev/null
+HOME="$fixture/home" "$installed" agent integrate opencode --project "$fixture/project" >/dev/null
 test -f "$fixture/project/.opencode/tools/bash.ts"
 test -f "$fixture/project/.opencode/tools/runtime.js"
+
+HOME="$fixture/home" "$installed" agent integrate opencode >/dev/null
+HOME="$fixture/home" "$installed" agent integrate pi >/dev/null
+test -f "$fixture/home/.config/opencode/tools/bash.ts"
+test -f "$fixture/home/.config/opencode/tools/runtime.js"
+test -f "$fixture/home/.pi/agent/extensions/tinybox/index.ts"
+test -f "$fixture/home/.pi/agent/extensions/tinybox/runtime.js"
 
 TINYBOX_INSTALL_PREFIX="$fixture/prefix" ./scripts/uninstall.sh >/dev/null
 test ! -e "$installed"
