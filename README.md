@@ -8,7 +8,7 @@ sandbox sessions, repeated exec, and environment lifecycle APIs.
 ![Phase Progress](https://img.shields.io/badge/phases-1--13-audited-yellow)
 ![Lines of Code](https://img.shields.io/badge/Rust_LOC-2306-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Status](https://img.shields.io/badge/status-experimental%2C%20open%20correctness%20gaps-orange)
+![Status](https://img.shields.io/badge/status-experimental%20local%20Agent%20MVP-orange)
 
 > ⚠️ **Experimental, rootful runtime; not a production security boundary.**
 > The original M1 P0 findings and the later C0–C3 correctness gaps have been
@@ -59,8 +59,8 @@ OpenCode / Pi / Codex / CLI Agent (target integrations)
 ```
 
 Agent-native task/exec, environments, lifecycle CLI, and the first adapter contracts
-have passed M0–M4 gates. Install UX is still an implementation target, so this is
-not yet a released MVP. See the active
+have passed G0 and M0–M5 gates. This is now an experimental local Agent container
+MVP, not a production security boundary or a packaged stable release. See the active
 [MVP plan](docs/PRODUCT_PLAN.md), [product vision](docs/VISION.md), and
 [Agent integration matrix](docs/AGENT_INTEGRATIONS.md).
 
@@ -213,15 +213,36 @@ describe this machine and workload only; rerun the script for local evidence.
 
 ### Prerequisites
 
-- Rust toolchain (1.70+)
+- Current stable Rust toolchain
 - Linux kernel 5.10+ (WSL2 works)
 - Root privileges (for namespace operations)
 
-### Build
+### Install and check the host
 
 ```bash
-cargo build --release
+./scripts/install.sh
+sudo ~/.local/bin/tinybox doctor
 ```
+
+See [local installation, daemon operation, cleanup, and troubleshooting](docs/INSTALL.md).
+
+### Start a local Agent task
+
+Start the rootful daemon in one terminal:
+
+```bash
+sudo ~/.local/bin/tinybox daemon --listen 127.0.0.1:8080
+```
+
+Then keep the Agent/client process as your normal user:
+
+```bash
+~/.local/bin/tinybox agent run --profile rust . -- cargo test
+```
+
+The command does not need a Dockerfile. It creates one persistent task, runs the command,
+and destroys the task after propagating output and exit status. OpenCode setup is documented
+in [the integration matrix](docs/AGENT_INTEGRATIONS.md).
 
 ### Prepare a rootfs (one-time)
 
@@ -254,6 +275,8 @@ sudo ./target/release/tinybox run --dangerous -- /bin/sh
 ```text
 tinybox run [OPTIONS] -- <COMMAND>...
 tinybox daemon [--listen <ADDRESS>]
+tinybox doctor [--json]
+tinybox agent run|exec|list|stop|destroy
 tinybox exec --pid <PID> -- <COMMAND>...
 tinybox agent-host --policy <PATH> -- <AGENT>...
 ```
@@ -328,7 +351,14 @@ see `DANGEROUS_CAPS` in `src/seccomp.rs` for the authoritative list.
 
 ```bash
 # Run all tests
+cargo fmt -- --check
 cargo test
+cargo clippy --all-targets -- -D warnings
+
+# Product-track acceptance
+sudo ./scripts/test_m3.sh
+./scripts/test_m5.sh
+sudo ./scripts/demo_local_agent.sh 10
 
 # Run specific phase tests
 cargo test --test phase1

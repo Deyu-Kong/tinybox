@@ -3,6 +3,7 @@ mod audit;
 mod broker;
 mod cgroup;
 mod daemon;
+mod doctor;
 mod environment;
 mod exec;
 mod image;
@@ -36,6 +37,10 @@ struct Cli {
 #[derive(Subcommand)]
 #[allow(clippy::large_enum_variant)]
 enum Commands {
+    Doctor {
+        #[arg(long)]
+        json: bool,
+    },
     Daemon {
         #[arg(long, default_value = "127.0.0.1:8080")]
         listen: String,
@@ -168,6 +173,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Doctor { json } => doctor::run(json)?,
         Commands::Daemon { listen } => {
             let address = daemon::parse_listen(&listen)?;
             tokio::runtime::Runtime::new()?.block_on(daemon::serve(address))?;

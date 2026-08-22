@@ -46,15 +46,7 @@ struct PathBeneathAttr {
 }
 
 pub fn enforce(rules: &[FsRule]) -> Result<()> {
-    let abi = unsafe {
-        libc::syscall(
-            libc::SYS_landlock_create_ruleset,
-            std::ptr::null::<RulesetAttr>(),
-            0usize,
-            CREATE_RULESET_VERSION,
-        )
-    };
-    if abi < 1 {
+    if abi_version().is_none() {
         return Err(std::io::Error::last_os_error())
             .context("Landlock ABI is unavailable; refusing policy-mode execution");
     }
@@ -104,6 +96,18 @@ pub fn enforce(rules: &[FsRule]) -> Result<()> {
         libc::close(ruleset_fd);
     }
     result
+}
+
+pub fn abi_version() -> Option<u32> {
+    let abi = unsafe {
+        libc::syscall(
+            libc::SYS_landlock_create_ruleset,
+            std::ptr::null::<RulesetAttr>(),
+            0usize,
+            CREATE_RULESET_VERSION,
+        )
+    };
+    (abi >= 1).then_some(abi as u32)
 }
 
 fn add_baseline_rules(ruleset_fd: i32) -> Result<()> {

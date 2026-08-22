@@ -5,10 +5,8 @@ use serde_json::{json, Value};
 use std::fs;
 use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
-
-const SESSION_ROOT: &str = "/run/tinybox/agents";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Session {
@@ -91,11 +89,11 @@ pub fn exec(id: &str, command: Vec<String>, cwd: String, timeout_ms: u64) -> Res
 }
 
 pub fn list() -> Result<()> {
-    let root = Path::new(SESSION_ROOT);
+    let root = session_root();
     if !root.exists() {
         return Ok(());
     }
-    for entry in fs::read_dir(root)? {
+    for entry in fs::read_dir(&root)? {
         let path = entry?.path();
         if path.extension().and_then(|value| value.to_str()) == Some("json") {
             let session: Session = serde_json::from_slice(&fs::read(&path)?)?;
@@ -204,11 +202,12 @@ fn required_string(value: &Value, key: &str) -> Result<String> {
 }
 
 fn save_session(session: &Session) -> Result<()> {
+    let root = session_root();
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
-        .create(SESSION_ROOT)?;
-    let path = Path::new(SESSION_ROOT).join(format!("{}.json", session.id));
+        .create(&root)?;
+    let path = root.join(format!("{}.json", session.id));
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -227,18 +226,36 @@ fn load_session(id: &str) -> Result<Session> {
         bail!("invalid task id");
     }
     serde_json::from_slice(
-        &fs::read(Path::new(SESSION_ROOT).join(format!("{id}.json")))
-            .context("unknown local Agent task")?,
+        &fs::read(session_root().join(format!("{id}.json"))).context("unknown local Agent task")?,
     )
     .map_err(Into::into)
 }
 
 fn remove_session(id: &str) -> Result<()> {
-    let path = Path::new(SESSION_ROOT).join(format!("{id}.json"));
+    let path = session_root().join(format!("{id}.json"));
     if path.exists() {
         fs::remove_file(path)?;
     }
     Ok(())
+}
+
+fn session_root() -> PathBuf {
+    let uid = unsafe { libc::geteuid() };
+    if uid == 0 {
+        return PathBuf::from("/run/tinybox/agents");
+    }
+    if let Some(path) = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) {
+        if fs::metadata(&path)
+            .map(|metadata| {
+                use std::os::unix::fs::MetadataExt;
+                metadata.is_dir() && metadata.uid() == uid
+            })
+            .unwrap_or(false)
+        {
+            return path.join("tinybox/agents");
+        }
+    }
+    PathBuf::from(format!("/run/user/{uid}/tinybox/agents"))
 }
 
 fn print_exec_output(value: &Value) -> Result<()> {

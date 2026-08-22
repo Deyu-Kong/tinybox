@@ -281,7 +281,7 @@ p50/p95、daemon/task idle RSS、environment/cache 磁盘增量和用户步骤�
 timeout=124、后台进程 exec cgroup 回收与 destroy 后无 PID/cgroup/state。10 次本机
 数据已写入 README；它是 WSL2 单机观测，不外推为普遍性能优势。
 
-### M5：本地安装与文档
+### M5：本地安装与文档 ✅ 2026-08-22
 
 - 一条构建/安装命令和一条 Agent 启动命令；
 - 自动内核/cgroup/Landlock 检测；
@@ -290,6 +290,13 @@ timeout=124、后台进程 exec cgroup 回收与 destroy 后无 PID/cgroup/state
 - rootful、Linux-only 和同内核安全边界保持醒目。
 
 完成门：在干净的受支持 Linux 上按 README 可完成安装、root 验收和 demo。
+
+完成记录：`scripts/install.sh` 用单命令构建并安装 runtime、OpenCode wrapper 与
+adapter assets；`tinybox doctor [--json]` 检测 Linux 5.10、cgroup v2 cpu/memory/pids、
+OverlayFS、Landlock ABI 和 root daemon 条件。`INSTALL.md` 覆盖临时 loopback daemon、
+普通用户 Agent client、清理、精确卸载和故障排查，并明确不提供未认证 systemd
+服务。`scripts/test_m5.sh` 在临时 prefix 验证 install→doctor→adapter→uninstall；
+当前 WSL2 主机另通过 root doctor、M3 组合验收与 M4 demo。
 
 ### M6：可选增强评估
 
@@ -341,6 +348,6 @@ task/environment 必须另跑 root 集成测试。非 root 提前返回只能报
 
 ## 9. 版本完成定义
 
-G0 与 M0–M5 全部关闭后，README 才能将状态改为“local Agent container MVP”。M6 是可选
-增强，不阻塞 MVP。在此之前，task、environment 和 Agent adapter 必须逐项标记
-实际验收状态。
+G0 与 M0–M5 已全部关闭，当前状态为实验性的 “local Agent container MVP”。M6 是
+可选增强，不阻塞 MVP。task、environment 和 Agent adapter 仍按实际验收状态逐项
+标记，不因 MVP 标签升级安全承诺。

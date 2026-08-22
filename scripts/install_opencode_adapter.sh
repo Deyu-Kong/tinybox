@@ -2,7 +2,12 @@
 set -eu
 
 workspace=${1:-.}
-source_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)/adapters/opencode
+install_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+if [ -d "$install_root/adapters/opencode" ]; then
+    source_dir=$install_root/adapters/opencode
+else
+    source_dir=$install_root/share/tinybox/adapters/opencode
+fi
 target_dir=$workspace/.opencode/tools
 
 mkdir -p "$target_dir"
